@@ -75,10 +75,11 @@ export function defineIdeaJob<TInput = IdeaAnalysisInput, TOutput = unknown>(def
   inputSchema: AiJobDefinition<TInput, TOutput>["inputSchema"];
   outputSchema: AiJobDefinition<TInput, TOutput>["outputSchema"];
   responseJsonSchema: JsonSchema;
+  version?: string;
 }): AiJobDefinition<TInput, TOutput> {
   return {
     ...definition,
-    version: "1",
+    version: definition.version ?? "1",
     model: undefined,
     buildInput: (_input: TInput, safeInput: SafeAiInput) => safeInput.serialized,
     safety: ideaSafety,

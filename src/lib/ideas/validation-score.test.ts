@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ideaValidationPasses, normalizeIdeaValidationScore } from "./validation-score";
 import { IdeaValidationOutputSchema } from "./schemas";
-import { ideaValidateJob } from "../ai/jobs/idea-validate";
+import { ideaValidateJob, weightedValidationScore } from "../ai/jobs/idea-validate";
 
 test("validation score is 0–10, including persisted 0–100 scores", () => {
   assert.equal(normalizeIdeaValidationScore(7), 7);
@@ -31,6 +31,11 @@ test("new AI validation outputs request a 0–10 score", () => {
   assert.equal(IdeaValidationOutputSchema.shape.overallScore.safeParse(101).success, false);
   const scoreSchema = ideaValidateJob.responseJsonSchema.properties?.overallScore;
   assert.equal(scoreSchema?.maximum, 10);
+  assert.equal(ideaValidateJob.version, "2");
+  const evaluationSchema = ideaValidateJob.responseJsonSchema.properties?.evaluation;
+  assert.deepEqual(evaluationSchema?.required, ["turnaroundTime", "volume", "savingsRevenue"]);
+  assert.equal(weightedValidationScore({ turnaroundTime: { score: 2.1 }, volume: { score: 2.1 }, savingsRevenue: { score: 2.1 } }), 7);
+  assert.ok(weightedValidationScore({ turnaroundTime: { score: 2.2 }, volume: { score: 2.2 }, savingsRevenue: { score: 2.2 } }) > 7);
   assert.match(ideaValidateJob.systemPrompt, /strictly above 7/);
   assert.match(ideaValidateJob.systemPrompt, /needs_human_review as an advisory/i);
 });

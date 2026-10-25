@@ -99,6 +99,7 @@ export const IdeaAnalysisInputSchema = IdeaInputSchema.extend({
     relatedIdeas: z.array(boundedText(200)).max(20).default([]),
 });
 const scoreSchema = z.strictObject({ score: z.number().min(0).max(5), rationale: boundedText(1_000) });
+const evaluationLensSchema = z.strictObject({ score: z.number().min(0).max(3), rationale: boundedText(1_000) });
 export const IdeaValidationOutputSchema = z.strictObject({
     decision: z.enum(["accept", "needs_clarification", "needs_human_review", "reject"]),
     recommendedStatus: ideaStatusSchema,
@@ -116,6 +117,13 @@ export const IdeaValidationOutputSchema = z.strictObject({
         urgency: scoreSchema,
         scalability: scoreSchema,
     }),
+    // Optional for older persisted validation runs. New validation job versions
+    // provide the three weighted lenses shown in the employee review screen.
+    evaluation: z.strictObject({
+        turnaroundTime: evaluationLensSchema,
+        volume: evaluationLensSchema,
+        savingsRevenue: evaluationLensSchema,
+    }).optional(),
     strengths: z.array(boundedText(500)).max(20),
     gaps: z.array(boundedText(500)).max(20),
     assumptions: z.array(boundedText(500)).max(20),

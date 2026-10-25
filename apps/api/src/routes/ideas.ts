@@ -381,7 +381,9 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
         return sendEnvelope(reply, request, updated);
       }
       const jobKey = input.action === "enrich" ? "idea.enrich" : input.action === "questions" ? "idea.questions" : "idea.validate";
-      const job = getAiJob(jobKey, "1");
+      // Select the currently registered version so versioned AI output schemas
+      // are used when a job has evolved (for example, idea.validate v2).
+      const job = getAiJob(jobKey);
       const previous = snapshot.runs.filter((candidate) => candidate.ideaVersionId === version.id && candidate.jobKey === job.key).sort((a, b) => b.id - a.id);
       const latest = previous[0];
       if (latest && !["failed", "timed_out", "cancelled"].includes(latest.status)) return sendEnvelope(reply, request, { runId: latest.id, status: latest.status, versionId: version.id });

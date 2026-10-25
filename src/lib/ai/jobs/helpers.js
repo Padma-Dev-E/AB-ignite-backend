@@ -65,7 +65,7 @@ export const jsonScores = {
 export function defineIdeaJob(definition) {
     return {
         ...definition,
-        version: "1",
+        version: definition.version ?? "1",
         model: undefined,
         buildInput: (_input, safeInput) => safeInput.serialized,
         safety: ideaSafety,
