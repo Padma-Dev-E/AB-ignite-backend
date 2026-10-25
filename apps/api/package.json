@@ -1,0 +1,13 @@
+{
+  "name": "@ab-ignite/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --conditions=react-server --import tsx --watch apps/api/src/server.ts",
+    "build": "tsc --noEmit -p apps/api/tsconfig.json",
+    "start": "node --conditions=react-server --import tsx apps/api/src/server.ts",
+    "typecheck": "tsc --noEmit -p apps/api/tsconfig.json",
+    "test": "node --conditions=react-server --import tsx --test apps/api/test/*.test.mjs"
+  }
+}

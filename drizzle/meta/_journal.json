@@ -1,0 +1,160 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1792674347547,
+      "tag": "0000_daily_timeslip",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792674861243,
+      "tag": "0001_nifty_fenris",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792689519539,
+      "tag": "0002_fresh_eddie_brock",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792720433354,
+      "tag": "0003_old_rocket_racer",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792724136710,
+      "tag": "0004_wave_0_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792724677740,
+      "tag": "0005_wave_5_rewards",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792725352178,
+      "tag": "0006_glossy_johnny_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1792725916308,
+      "tag": "0007_striped_prodigy",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1792726125321,
+      "tag": "0008_concerned_kat_farrell",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792727000000,
+      "tag": "0010_idea_submission_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792729568368,
+      "tag": "0010_nappy_lake",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792729700000,
+      "tag": "0011_notification_email_deliveries",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792730000000,
+      "tag": "0012_governance_assignment_due_dates",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1792732200000,
+      "tag": "0013_engagement_announcements",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1792734946411,
+      "tag": "0014_panoramic_whirlwind",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1792738736603,
+      "tag": "0015_private_idea_drafts",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1792740000000,
+      "tag": "0016_badge_admin_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1792741000000,
+      "tag": "0017_priority_quality_band",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1792754329736,
+      "tag": "0018_require_first_password_change",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1792756702877,
+      "tag": "0019_three_account_roles",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1792762143479,
+      "tag": "0020_remove_redemption_catalogue",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1792764128660,
+      "tag": "0021_idea_human_review_override",
+      "breakpoints": true
+    }
+  ]
+}
