@@ -16,6 +16,7 @@ import {
   getActivePointRule,
   getCurrentRewardVersion,
   getLevelForPoints as getLevelRecord,
+  getLevelProgressForPoints,
   listAllRewards,
   listRewardCatalogue,
   listBadgeProgress,
@@ -184,8 +185,8 @@ export async function getAdminCatalogue() { return listAllRewards(); }
 
 export async function getEmployeePointsSummary(userId: number) {
   const [balance, badges] = await Promise.all([getBalance(userId), getBadgeProgress(userId)]);
-  const level = await getLevelForPoints(balance.balance);
-  return { balance, level, badges };
+  const { level, nextLevel, progress } = await getLevelProgressForPoints(balance.balance);
+  return { balance, level, nextLevel, progress, badges };
 }
 
 export async function getEmployeeRewards(userId: number) {

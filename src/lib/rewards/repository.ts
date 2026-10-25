@@ -14,6 +14,7 @@ import {
 import { serializeAuditMetadata } from "../audit/redaction-core";
 import { buildRewardsAuditRecord } from "./audit";
 import { RewardsError } from "./errors";
+import { calculateLevelProgress } from "./level-progress";
 
 export type RewardsTx = Parameters<typeof db.transaction>[0] extends (tx: infer T) => unknown ? T : never;
 
@@ -125,6 +126,11 @@ export async function listAllRewards() {
 export async function getLevelForPoints(points: number) {
   const [level] = await db.select().from(levels).where(lte(levels.minimumPoints, Math.max(0, points))).orderBy(desc(levels.minimumPoints)).limit(1).all();
   return level ?? null;
+}
+
+export async function getLevelProgressForPoints(points: number) {
+  const definitions = await db.select().from(levels).orderBy(asc(levels.minimumPoints), asc(levels.sortOrder), asc(levels.id)).all();
+  return calculateLevelProgress(points, definitions);
 }
 
 export async function listBadgeProgress(userId: number) {
