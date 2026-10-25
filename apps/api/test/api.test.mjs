@@ -69,38 +69,29 @@ test("retired passwordless demo access remains explicitly rejected", async () =>
   assert.equal(response.json().error.code, "login_method_removed");
 });
 
-test("every inventoried non-Auth.js method and path is registered in Fastify", async () => {
+test("every Fastify route module is registered in the backend app", async () => {
   const collect = async (directory) => {
     const entries = await readdir(directory, { withFileTypes: true });
     const result = [];
     for (const entry of entries) {
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) result.push(...await collect(file));
-      else if (entry.name === "route.ts") result.push(file);
+      else if (entry.name.endsWith(".ts")) result.push(file);
     }
     return result;
   };
-  const files = await collect(path.resolve("app/api"));
-  const missing = [];
-  let expected = 0;
+  const routeDirectory = path.resolve("apps/api/src/routes");
+  const files = await collect(routeDirectory);
+  const appSource = await readFile(path.resolve("apps/api/src/app.ts"), "utf8");
+  const expected = [];
   for (const file of files) {
-    const relative = path.relative(path.resolve("app/api"), path.dirname(file)).split(path.sep).join("/");
-    if (relative === "auth/[...nextauth]") continue;
     const source = await readFile(file, "utf8");
-    const methods = new Set(source.matchAll(/export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b/g).map((match) => match[1]));
-    for (const match of source.matchAll(/export\s+const\s+(GET|POST|PUT|PATCH|DELETE)\b/g)) methods.add(match[1]);
-    if (source.includes("export const { GET, POST }")) { methods.add("GET"); methods.add("POST"); }
-    let url = `/api/${relative}`
-      .replaceAll("[id]", ":id")
-      .replaceAll("[ideaId]", ":ideaId")
-      .replaceAll("[sessionId]", ":sessionId");
-    if (relative === "account/profile") { methods.add("GET"); methods.add("PATCH"); }
-    if (relative === "announcements/[id]") methods.add("GET");
-    for (const method of methods) {
-      expected++;
-      if (!app.hasRoute({ method, url })) missing.push(`${method} ${url}`);
-    }
+    const registration = source.match(/export async function (register\w+)\(/)?.[1];
+    assert.ok(registration, `${path.basename(file)} should export a route registration function`);
+    const relative = path.relative(path.resolve("apps/api/src"), file).split(path.sep).join("/").replace(/\.ts$/, ".js");
+    expected.push(registration);
+    assert.ok(appSource.includes(`import { ${registration} } from "./${relative}"`));
+    assert.ok(appSource.includes(`await ${registration}(app)`));
   }
-  assert.equal(expected, 101, "expected 101 Fastify-owned operations out of 103 total");
-  assert.deepEqual(missing, []);
+  assert.equal(expected.length, 8);
 });

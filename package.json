@@ -7,7 +7,6 @@
     "api:build": "tsc --noEmit -p apps/api/tsconfig.json",
     "api:start": "node --conditions=react-server --import tsx apps/api/src/server.ts",
     "api:dev": "node --conditions=react-server --import tsx --watch apps/api/src/server.ts",
-    "ai:worker": "node --conditions=react-server --import tsx scripts/run-ai-worker.ts",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts"
   },

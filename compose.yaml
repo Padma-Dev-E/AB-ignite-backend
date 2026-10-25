@@ -19,25 +19,17 @@ x-backend: &backend
   stop_grace_period: 30s
 
 services:
-  setup:
-    <<: *backend
-    command: ["setup"]
-    volumes:
-      - sqlite_data:/app/data
-      - ./data:/dev-data:ro
-    restart: "no"
-
   api:
     <<: *backend
-    command: ["api"]
+    command: ["backend"]
     environment:
       DATABASE_URL: /app/data/ab-ignite.db
       NODE_ENV: production
       API_HOST: 0.0.0.0
       API_PORT: 4100
-    depends_on:
-      setup:
-        condition: service_completed_successfully
+    volumes:
+      - sqlite_data:/app/data
+      - ./data:/dev-data:ro
     expose:
       - "4100"
     networks:
@@ -71,8 +63,6 @@ services:
       - no-new-privileges:true
     stop_grace_period: 30s
     depends_on:
-      setup:
-        condition: service_completed_successfully
       api:
         condition: service_healthy
     networks:
@@ -88,14 +78,6 @@ services:
       timeout: 6s
       start_period: 45s
       retries: 4
-
-  ai-worker:
-    <<: *backend
-    command: ["ai-worker"]
-    depends_on:
-      setup:
-        condition: service_completed_successfully
-    restart: unless-stopped
 
 volumes:
   sqlite_data:
