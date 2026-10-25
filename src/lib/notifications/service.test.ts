@@ -50,6 +50,15 @@ test("list maps producer links to safe, available destinations and hides arbitra
   assert.equal("userId" in find(ideaNote.id), false);
 });
 
+test("published announcements are listed for the community while drafts stay hidden", () => {
+  const published = db.insert(schema.announcements).values({ title: "Community update", body: "A new update for everyone.", published: true }).returning().get();
+  const draft = db.insert(schema.announcements).values({ title: "Unpublished draft", body: "Not visible.", published: false }).returning().get();
+  const items = service.listPublishedAnnouncements(20);
+  assert.ok(items.some((item) => item.id === published.id));
+  assert.equal(items.some((item) => item.id === draft.id), false);
+  assert.throws(() => service.listPublishedAnnouncements(0), /limit/i);
+});
+
 test("deleted, unpublished, and private draft targets cannot navigate or expose details", () => {
   const draft = db.insert(schema.ideas).values({ authorId: otherId, title: "Private", summary: "Private", category: "Ops", reference: "NOTIFICATION-DRAFT", status: "draft" }).returning().get();
   const unpublished = db.insert(schema.announcements).values({ title: "Hidden", body: "Secret", published: false }).returning().get();

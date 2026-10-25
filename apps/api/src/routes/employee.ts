@@ -7,7 +7,7 @@ import { changePassword, PasswordError } from "../../../../src/features/account/
 import { AuthorizationError } from "../../../../src/lib/auth/authorization-core.js";
 import { LibraryError, type RequestContext as LibraryContext, articleInsight, completeArticle, getFeedback, getLibraryArticle, listLibrary, submitFeedback } from "../../../../src/lib/articles/service.js";
 import { AiIdempotencyError, AiPolicyError, AiProviderError, AiSchemaValidationError, AiTimeoutError } from "../../../../src/lib/ai/errors.js";
-import { listNotifications, setNotificationRead, getPublishedAnnouncement } from "../../../../src/lib/notifications/service.js";
+import { listNotifications, listPublishedAnnouncements, setNotificationRead, getPublishedAnnouncement } from "../../../../src/lib/notifications/service.js";
 import { QuizError } from "../../../../src/lib/quizzes/errors.js";
 import { idempotencySchema, rankingScopeSchema, submitAnswersSchema } from "../../../../src/lib/quizzes/schemas.js";
 import { getJourney, getQuizAttempt, getQuizDetails, getRankings, joinChallenge, listChallenges, listQuizCatalogue, startQuizAttempt, submitQuizAttempt } from "../../../../src/lib/quizzes/service.js";
@@ -40,6 +40,7 @@ const notificationUpdateSchema = z.strictObject({
   read: z.boolean().default(true),
   all: z.boolean().default(false),
 }).refine((value) => Boolean(value.id) !== value.all);
+const announcementListQuerySchema = z.strictObject({ limit: z.coerce.number().int().min(1).max(20).default(4) });
 
 type EmployeeRouteRequest = FastifyRequest & { actor: ApiActor | null };
 type EmployeeApi = FastifyInstance & {
@@ -437,6 +438,16 @@ export async function registerEmployeeRoutes(app: FastifyInstance): Promise<void
     if (!announcement) return sendError(reply, request, "not_found", "Announcement not found.", 404);
     return sendEnvelope(reply, request, announcement, 200);
   };
+  app.get("/api/announcements", async (request, reply) => {
+    const actor = await requireActor(app, request as EmployeeRouteRequest, reply);
+    if (!actor) return;
+    try {
+      const query = announcementListQuerySchema.parse(Object.fromEntries(webUrl(request).searchParams.entries()));
+      return sendEnvelope(reply, request, { items: listPublishedAnnouncements(query.limit) }, 200);
+    } catch (error) {
+      return sendCommonError(reply, request, error);
+    }
+  });
   app.get("/api/notifications/announcements/:id", getAnnouncement);
   app.get("/api/announcements/:id", getAnnouncement);
 

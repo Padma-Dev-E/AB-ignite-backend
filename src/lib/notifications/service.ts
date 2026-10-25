@@ -129,3 +129,13 @@ export function getPublishedAnnouncement(id: number) {
   const row = db.select({ id: announcements.id, title: announcements.title, body: announcements.body, createdAt: announcements.createdAt }).from(announcements).where(and(eq(announcements.id, id), eq(announcements.published, true))).get();
   return row ? { id: row.id, title: row.title, body: row.body, publishedAt: row.createdAt.toISOString() } : null;
 }
+
+export function listPublishedAnnouncements(limit = 4) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("Invalid announcement list limit.");
+  return db.select({ id: announcements.id, title: announcements.title, body: announcements.body, pinned: announcements.pinned, publishedAt: announcements.createdAt })
+    .from(announcements)
+    .where(eq(announcements.published, true))
+    .orderBy(desc(announcements.pinned), desc(announcements.createdAt), desc(announcements.id))
+    .limit(limit)
+    .all();
+}

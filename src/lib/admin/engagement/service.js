@@ -71,7 +71,7 @@ export function setAnnouncementPinned(actor, announcementId, pinned, key) {
             tx.update(announcements).set({ pinned: false, updatedAt: now }).where(and(eq(announcements.pinned, true), sql `${announcements.id} <> ${announcementId}`)).run();
         const changed = tx.update(announcements).set({ pinned, updatedAt: now }).where(eq(announcements.id, announcementId)).returning().get();
         if (pinned)
-            for (const user of tx.select({ id: users.id }).from(users).where(and(eq(users.role, "employee"), eq(users.isActive, true))).all())
+            for (const user of tx.select({ id: users.id }).from(users).where(eq(users.isActive, true)).all())
                 tx.insert(notifications).values({ userId: user.id, type: "announcement_published", title: changed.title, body: changed.body, link: `/announcements/${changed.id}`, createdAt: now, updatedAt: now }).run();
         return changed;
     });

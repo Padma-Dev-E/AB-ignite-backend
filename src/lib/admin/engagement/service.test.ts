@@ -5,7 +5,7 @@ import { db } from "../../../db/connection";
 import { announcements, auditEvents, feedbackCampaigns, notifications, refreshTokens, users } from "../../../db/schema";
 import { createAnnouncement, setAnnouncementPinned, setCampaignActive } from "./service";
 
-function principal(role: "back_office" | "employee" = "back_office") {
+function principal(role: "back_office" | "employee" | "business_owner" = "back_office") {
   const stamp = `${Date.now()}-${Math.random()}`;
   const user = db.insert(users).values({ name: "Engagement actor", email: `eng-${stamp}@example.test`, role, passwordHash: "test" }).returning({ id: users.id }).get();
   const session = db.insert(refreshTokens).values({ userId: user.id, tokenHash: `eng-${stamp}`, expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning({ id: refreshTokens.id }).get();
@@ -14,7 +14,8 @@ function principal(role: "back_office" | "employee" = "back_office") {
 
 test("announcement creation is idempotent and pin changes notify employees once", () => {
   const actor = principal();
-  principal("employee");
+  const employee = principal("employee");
+  const businessOwner = principal("business_owner");
   const input = { title: "Quarterly update", body: "Read the new update." };
   const key = `announce-${Date.now()}`;
   const first = createAnnouncement(actor, input, key);
@@ -22,7 +23,9 @@ test("announcement creation is idempotent and pin changes notify employees once"
   setAnnouncementPinned(actor, first.id, true, `${key}-pin`);
   setAnnouncementPinned(actor, first.id, true, `${key}-pin`);
   assert.equal(db.select().from(announcements).where(eq(announcements.id, first.id)).get()?.pinned, true);
-  assert.ok(db.select().from(notifications).where(eq(notifications.type, "announcement_published")).all().filter((n) => n.link === `/announcements/${first.id}`).length >= 1);
+  const announcementNotifications = db.select().from(notifications).where(eq(notifications.type, "announcement_published")).all().filter((n) => n.link === `/announcements/${first.id}`);
+  const notifiedUsers = new Set(announcementNotifications.map((item) => item.userId));
+  assert.ok([actor.userId, employee.userId, businessOwner.userId].every((id) => notifiedUsers.has(id)));
   assert.ok(db.select().from(auditEvents).where(eq(auditEvents.action, "admin.engagement.announcement.create")).all().some((event) => JSON.parse(event.metadataJson ?? "{}").resourceId === first.id));
   assert.ok(db.select().from(auditEvents).where(eq(auditEvents.action, "admin.engagement.announcement.pin")).all().some((event) => JSON.parse(event.metadataJson ?? "{}").resourceId === first.id));
 });
