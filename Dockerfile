@@ -1,4 +1,6 @@
-FROM node:22-bookworm-slim AS dependencies
+ARG NODE_IMAGE=node:24-bookworm-slim
+
+FROM ${NODE_IMAGE} AS dependencies
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
@@ -17,7 +19,7 @@ COPY apps/api/src ./apps/api/src
 COPY drizzle.config.ts ./
 RUN npm run api:build
 
-FROM node:22-bookworm-slim AS runtime
+FROM ${NODE_IMAGE} AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
