@@ -8,7 +8,10 @@ const temporaryPath = `${targetPath}.importing`;
 if (existsSync(targetPath)) {
   console.log("Docker database already exists; preserving it.");
 } else {
-  if (!existsSync(sourcePath)) throw new Error("Development database is missing; import stopped.");
+  if (!existsSync(sourcePath)) {
+    console.log("No database snapshot was supplied; initializing from backend migrations and seed data.");
+    process.exit(0);
+  }
   if (existsSync(temporaryPath)) throw new Error("An incomplete database import exists; inspect it before retrying.");
 
   const source = new Database(sourcePath, { readonly: true, fileMustExist: true });
