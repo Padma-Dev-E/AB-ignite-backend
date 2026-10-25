@@ -18,6 +18,7 @@ import {
   IdeaSubmissionDetailsSchema,
   IdeaUpdateSchema,
   IdeaEnrichmentOutputSchema,
+  IdeaQuestionsOutputSchema,
   IdeaValidationOutputSchema,
 } from "../../../../src/lib/ideas/schemas.js";
 import {
@@ -53,6 +54,7 @@ const submitSchema = z.strictObject({
 const developmentSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("update"), input: IdeaUpdateSchema }),
   z.strictObject({ action: z.literal("enrich") }),
+  z.strictObject({ action: z.literal("questions") }),
   z.strictObject({ action: z.literal("validate") }),
 ]);
 
@@ -331,9 +333,9 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
     try {
       const snapshot = await getAuthorizedIdeaSnapshot({ kind: "user", id: String(actor.userId) }, ideaId);
       if (!snapshot) return sendError(reply, request, "not_found", "Idea not found.", 404);
-      const runs = snapshot.runs.filter((run) => run.jobKey === "idea.enrich" || run.jobKey === "idea.validate").sort((a, b) => b.id - a.id);
+      const runs = snapshot.runs.filter((run) => ["idea.enrich", "idea.questions", "idea.validate"].includes(run.jobKey)).sort((a, b) => b.id - a.id);
       return sendEnvelope(reply, request, { runs: runs.map((run) => {
-        const schema = run.jobKey === "idea.enrich" ? IdeaEnrichmentOutputSchema : IdeaValidationOutputSchema;
+        const schema = run.jobKey === "idea.enrich" ? IdeaEnrichmentOutputSchema : run.jobKey === "idea.questions" ? IdeaQuestionsOutputSchema : IdeaValidationOutputSchema;
         let result = null;
         if (run.status === "succeeded" && run.resultJson) {
           try { const parsed = schema.safeParse(JSON.parse(run.resultJson)); if (parsed.success) result = parsed.data; } catch { /* Corrupt stored output is unavailable. */ }
@@ -378,7 +380,8 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
         appendAuditEvent({ actorUserId: actor.userId, action: "idea.development_updated", targetType: "idea", targetId: ideaId, metadata: { versionId: updated.versionId } });
         return sendEnvelope(reply, request, updated);
       }
-      const job = getAiJob(input.action === "enrich" ? "idea.enrich" : "idea.validate", "1");
+      const jobKey = input.action === "enrich" ? "idea.enrich" : input.action === "questions" ? "idea.questions" : "idea.validate";
+      const job = getAiJob(jobKey, "1");
       const previous = snapshot.runs.filter((candidate) => candidate.ideaVersionId === version.id && candidate.jobKey === job.key).sort((a, b) => b.id - a.id);
       const latest = previous[0];
       if (latest && !["failed", "timed_out", "cancelled"].includes(latest.status)) return sendEnvelope(reply, request, { runId: latest.id, status: latest.status, versionId: version.id });

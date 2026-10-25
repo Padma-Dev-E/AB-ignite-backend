@@ -85,13 +85,8 @@ export const IdeaSubmitSchema = z.strictObject({
 });
 
 export const IdeaSubmissionDetailsSchema = z.strictObject({
-  answers: z.strictObject({
-    beneficiaries: z.string().trim().min(1).max(1_000),
-    currentProcess: z.string().trim().min(1).max(1_000),
-    needed: z.string().trim().min(1).max(1_000),
-    risks: z.string().trim().min(1).max(1_000),
-    successMeasure: z.string().trim().min(1).max(1_000),
-  }),
+  answers: z.record(z.string().trim().min(1).max(500), z.string().trim().max(1_000))
+    .refine((answers) => Object.keys(answers).length <= 8, "At most eight idea-specific answers may be submitted."),
   metrics: z.strictObject({
     turnaround: z.number().min(0).max(3),
     volume: z.number().min(0).max(3),

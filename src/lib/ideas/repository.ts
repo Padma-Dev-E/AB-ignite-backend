@@ -663,26 +663,25 @@ export async function submitIdea(actor: IdeaActor, ideaId: number, options: { su
       validationScore = normalizeIdeaValidationScore(result.overallScore);
       validationPassed = validationRun?.status === "succeeded" && ideaValidationPasses(result);
     } catch { /* Invalid or absent AI results fail closed. */ }
-    const validationRuns = tx.select({ ideaVersionId: aiRuns.ideaVersionId, resultJson: aiRuns.resultJson }).from(aiRuns)
+    const validationRuns = tx.select({ resultJson: aiRuns.resultJson }).from(aiRuns)
       .where(and(eq(aiRuns.ideaId, ideaId), eq(aiRuns.jobKey, "idea.validate"), eq(aiRuns.status, "succeeded"))).all();
-    const scoredVersions = new Set<number>();
-    const lowScoringVersions = new Set<number>();
+    let scoredValidationResults = 0;
+    let failedValidationResults = 0;
     for (const run of validationRuns) {
-      if (run.ideaVersionId === null) continue;
       try {
         const score = normalizeIdeaValidationScore(JSON.parse(run.resultJson ?? "{}").overallScore);
         if (score === null) continue;
-        scoredVersions.add(run.ideaVersionId);
-        if (score <= IDEA_VALIDATION_PASS_SCORE) lowScoringVersions.add(run.ideaVersionId);
+        scoredValidationResults += 1;
+        if (score <= IDEA_VALIDATION_PASS_SCORE) failedValidationResults += 1;
       } catch { /* Malformed historical results do not qualify for the human review path. */ }
     }
     const submittedWithLowAiScore = !validationPassed && validationScore !== null &&
-      validationScore <= IDEA_VALIDATION_PASS_SCORE && options.submitForHumanReview === true && lowScoringVersions.size >= 2;
+      validationScore <= IDEA_VALIDATION_PASS_SCORE && options.submitForHumanReview === true && failedValidationResults >= 2;
     if (!validationPassed && !submittedWithLowAiScore) {
-      if (validationScore !== null && validationScore <= IDEA_VALIDATION_PASS_SCORE && lowScoringVersions.size >= 2) {
+      if (validationScore !== null && validationScore <= IDEA_VALIDATION_PASS_SCORE && failedValidationResults >= 2) {
         throw new Error("This idea scored below the AI validation threshold. Choose submit for human review to continue.");
       }
-      throw new Error(`Idea validation must pass for the current draft before submission (score ${validationScore === null ? "unavailable" : `${validationScore}/10`}; must be above 7/10). Improve the draft and revalidate. Human review submission becomes available after two below-threshold results on different draft versions.`);
+      throw new Error(`Idea validation must pass for the current draft before submission (score ${validationScore === null ? "unavailable" : `${validationScore}/10`}; must be above 7/10). Improve the draft and revalidate. Human review submission becomes available after two below-threshold validation results for this idea.`);
     }
     const [preflight] = tx.select().from(aiRuns).where(and(eq(aiRuns.ideaId, ideaId), eq(aiRuns.ideaVersionId, latestVersion?.id ?? -1), eq(aiRuns.jobKey, "idea.preflight"), eq(aiRuns.status, "succeeded"))).orderBy(desc(aiRuns.createdAt)).limit(1).all();
     let safe = false;
@@ -702,10 +701,11 @@ export async function submitIdea(actor: IdeaActor, ideaId: number, options: { su
     if (!sequence || sequence.lastValue > 99_999) throw new Error("The annual idea reference sequence is exhausted");
     const reference = `ABI-${year}-${String(sequence.lastValue).padStart(5, "0")}`;
     const [updated] = tx.update(ideas).set({ reference, priorityScore: priority.score, priorityBand: priority.band, status: "screening", updatedAt: new Date() }).where(eq(ideas.id, ideaId)).returning().all();
-    const validationAttempts = scoredVersions.size;
+    const validationAttempts = scoredValidationResults;
     tx.update(ideaSubmissions).set({ score: priority.score, validationPassed, aiValidationScore: validationScore, aiValidationAttempts: validationAttempts, submittedWithLowAiScore, submittedAt: new Date(), minimumScore: minimum, updatedAt: new Date() }).where(eq(ideaSubmissions.ideaId, ideaId)).run();
-    const validationMetadata = { aiValidationScore: validationScore, aiValidationAttempts: validationAttempts, submittedWithLowAiScore };
-    tx.insert(ideaEvents).values({ ideaId, actorType: actor.kind, actorId: userId, eventType: "submitted", toStatus: "screening", metadataJson: JSON.stringify({ score: priority.score, band: priority.band, minimum, breakdown, ...validationMetadata }) }).run();
+    const validationVersionId = latestVersion?.id ?? null;
+    const validationMetadata = { aiValidationScore: validationScore, aiValidationAttempts: validationAttempts, submittedWithLowAiScore, validationVersionId, failedValidationResults };
+    tx.insert(ideaEvents).values({ ideaId, ideaVersionId: validationVersionId, actorType: actor.kind, actorId: userId, eventType: "submitted", toStatus: "screening", metadataJson: JSON.stringify({ score: priority.score, band: priority.band, minimum, breakdown, ...validationMetadata }) }).run();
     tx.insert(notifications).values({ userId, type: "idea_submitted", title: "Idea submitted", body: submittedWithLowAiScore ? `${reference} was submitted for human review after repeated below-threshold AI scores.` : `${reference} has been submitted for review.`, link: `/ideas/${ideaId}` }).run();
     tx.insert(auditEvents).values({ actorUserId: userId, action: "ideas.submitted", targetType: "idea", targetId: String(ideaId), metadataJson: JSON.stringify({ status: "submitted", result: priority.score, ...validationMetadata }), createdAt: new Date() }).run();
     return { idea: updated, reference, score: priority.score, minimumScore: minimum, priorityBand: updated.priorityBand, category: updated.category, breakdown, ...validationMetadata, submitted: true as const };
