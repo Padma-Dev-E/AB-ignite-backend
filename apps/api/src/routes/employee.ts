@@ -135,9 +135,11 @@ export async function registerEmployeeRoutes(app: FastifyInstance): Promise<void
   app.post("/api/account/password", async (request, reply) => {
     const actor = await requireActor(app, request as EmployeeRouteRequest, reply);
     if (!actor) return;
-    const origin = request.headers.origin;
-    const sameOrigin = Boolean(origin && origin === `${request.protocol}://${request.hostname}`);
-    if ((origin && !sameOrigin) || request.headers["sec-fetch-site"] === "cross-site") {
+    // registerHttp validates Origin against the configured public frontend
+    // origins. Do not compare it to this request's internal API host here:
+    // rewrites proxy the request through api:4100 while preserving the browser
+    // Origin header. Keep Fetch Metadata as a fallback when Origin is absent.
+    if (request.headers["sec-fetch-site"] === "cross-site") {
       return sendError(reply, request, "forbidden", "Cross-origin request refused.", 403);
     }
     const contentType = request.headers["content-type"];

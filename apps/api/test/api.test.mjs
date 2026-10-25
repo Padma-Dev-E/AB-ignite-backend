@@ -7,7 +7,7 @@ process.env.AUTH_SECRET = "local-fastify-api-test-secret-value-0123456789";
 process.env.DATABASE_URL = `/tmp/ab-ignite-api-test-${process.pid}.db`;
 process.env.API_HOST = "127.0.0.1";
 process.env.API_PORT = "4198";
-process.env.API_ALLOWED_ORIGINS = "https://app.example.test";
+process.env.API_ALLOWED_ORIGINS = "https://app.example.test,http://127.0.0.1:3100";
 
 let app;
 before(async () => {
@@ -55,6 +55,55 @@ test("same-origin requests forwarded by the web service pass the origin check", 
   });
   assert.equal(response.statusCode, 401);
   assert.deepEqual(response.json(), { ok: false, error: "Refresh token is invalid or expired." });
+});
+
+test("password changes accept the configured frontend origin through the API proxy", async () => {
+  const [{ db }, { users, refreshTokens }, { hashPassword }, { encode }, { SESSION_COOKIE_NAME }] = await Promise.all([
+    import("../../../src/db/connection.js"),
+    import("../../../src/db/schema.js"),
+    import("../../../src/auth/password-core.js"),
+    import("next-auth/jwt"),
+    import("../../../src/auth/config.js"),
+  ]);
+  const { migrate } = await import("drizzle-orm/better-sqlite3/migrator");
+  migrate(db, { migrationsFolder: path.resolve("drizzle") });
+  const currentPassword = "CurrentPassword2026";
+  const user = db.insert(users).values({
+    name: "Password Route Test",
+    email: `password-route-${process.pid}@example.test`,
+    department: "QA",
+    role: "employee",
+    passwordHash: await hashPassword(currentPassword),
+  }).returning().get();
+  const now = new Date();
+  const session = db.insert(refreshTokens).values({
+    userId: user.id,
+    tokenHash: `password-route-${process.pid}`,
+    expiresAt: new Date(now.getTime() + 60_000),
+    idleExpiresAt: new Date(now.getTime() + 60_000),
+    absoluteExpiresAt: new Date(now.getTime() + 60_000),
+    sessionVersion: user.sessionVersion,
+  }).returning().get();
+  const sessionCookie = await encode({
+    secret: process.env.AUTH_SECRET,
+    salt: SESSION_COOKIE_NAME,
+    maxAge: 60,
+    token: { sub: String(user.id), sessionId: String(session.id), sessionVersion: user.sessionVersion },
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/account/password",
+    headers: {
+      host: "api:4100",
+      origin: "http://127.0.0.1:3100",
+      cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionCookie)}`,
+      "content-type": "application/json",
+    },
+    payload: { currentPassword, newPassword: "NewPassword2026" },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().data, { changed: true, sessionsRevoked: true });
 });
 
 test("Auth.js refresh failures preserve their non-envelope compatibility shape", async () => {
