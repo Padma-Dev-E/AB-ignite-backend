@@ -1,0 +1,109 @@
+name: ab-ignite-local
+
+x-backend: &backend
+  image: ab-ignite-backend:production
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - path: ./.env
+      required: true
+  environment:
+    DATABASE_URL: /app/data/ab-ignite.db
+    NODE_ENV: production
+  volumes:
+    - sqlite_data:/app/data
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  stop_grace_period: 30s
+
+services:
+  setup:
+    <<: *backend
+    command: ["setup"]
+    volumes:
+      - sqlite_data:/app/data
+      - ./data:/dev-data:ro
+    restart: "no"
+
+  api:
+    <<: *backend
+    command: ["api"]
+    environment:
+      DATABASE_URL: /app/data/ab-ignite.db
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: 4100
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    expose:
+      - "4100"
+    networks:
+      api_private:
+        ipv4_address: 172.30.0.3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "docker/healthcheck.mjs", "api"]
+      interval: 15s
+      timeout: 6s
+      start_period: 20s
+      retries: 4
+
+  web:
+    image: ab-ignite-web:production
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_AUTH_REFRESH_INTERVAL_SECONDS: ${NEXT_PUBLIC_AUTH_REFRESH_INTERVAL_SECONDS:-600}
+        API_INTERNAL_URL: http://api:4100
+    command: ["node_modules/.bin/next", "start", "--hostname", "0.0.0.0", "--port", "3000"]
+    env_file:
+      - path: ../frontend/.env
+        required: true
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: http://api:4100
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    networks:
+      api_private:
+        ipv4_address: 172.30.0.2
+    ports:
+      - "127.0.0.1:3100:3000"
+      - "172.17.0.1:3100:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "docker/healthcheck.mjs"]
+      interval: 15s
+      timeout: 6s
+      start_period: 45s
+      retries: 4
+
+  ai-worker:
+    <<: *backend
+    command: ["ai-worker"]
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  sqlite_data:
+    name: ab-ignite-local_sqlite_data
+
+networks:
+  api_private:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
