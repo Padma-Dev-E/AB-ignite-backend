@@ -4,6 +4,7 @@ import {
   auditEvents,
   articleCompletions,
   articles,
+  ideas,
   notifications,
   pointRules,
   pointsLedger,
@@ -163,9 +164,11 @@ export async function listQuizCatalogue(userId?: number) {
   // category/level slots had been filled.
   const preferredIds = new Set(preferred.map(({ quiz }) => quiz.id));
   const selected = preferred.concat(Array.from(latest.values()).filter(({ quiz }) => !preferredIds.has(quiz.id)));
-  const attempted = userId && selected.length ? await db.select({ quizId: quizAttempts.quizId }).from(quizAttempts)
-    .where(and(eq(quizAttempts.userId, userId), inArray(quizAttempts.quizId, selected.map(({ quiz }) => quiz.id)), inArray(quizAttempts.status, ["submitted", "expired"]))).all() : [];
-  const attemptedQuizIds = new Set(attempted.map((row) => row.quizId));
+  const attempts = userId && selected.length ? await db.select({ quizId: quizAttempts.quizId, scorePercent: quizAttempts.scorePercent, submittedAt: quizAttempts.submittedAt, id: quizAttempts.id }).from(quizAttempts)
+    .where(and(eq(quizAttempts.userId, userId), inArray(quizAttempts.quizId, selected.map(({ quiz }) => quiz.id)), inArray(quizAttempts.status, ["submitted", "expired"])))
+    .orderBy(asc(quizAttempts.submittedAt), asc(quizAttempts.id)).all() : [];
+  const attemptsByQuiz = new Map<number, typeof attempts>();
+  for (const attempt of attempts) attemptsByQuiz.set(attempt.quizId, [...(attemptsByQuiz.get(attempt.quizId) ?? []), attempt]);
   return selected.map(({ quiz, version }) => ({
     id: quiz.id,
     title: quiz.title,
@@ -173,10 +176,15 @@ export async function listQuizCatalogue(userId?: number) {
     level: version.level,
     objective: version.objective,
     passMark: version.passMark,
+    pointsPerQuestion: version.pointsPerQuestion,
     timeLimitSeconds: version.timeLimitSeconds,
     version: version.version,
     questionCount: quizQuestionsCount(version.id),
-    hasAttempted: attemptedQuizIds.has(quiz.id),
+    attemptCount: attemptsByQuiz.get(quiz.id)?.length ?? 0,
+    firstScorePercent: attemptsByQuiz.get(quiz.id)?.[0]?.scorePercent ?? null,
+    latestScorePercent: attemptsByQuiz.get(quiz.id)?.at(-1)?.scorePercent ?? null,
+    latestAttemptAt: attemptsByQuiz.get(quiz.id)?.at(-1)?.submittedAt ?? null,
+    hasAttempted: (attemptsByQuiz.get(quiz.id)?.length ?? 0) > 0,
   }));
 }
 
@@ -259,12 +267,33 @@ export async function getQuizAttempt(userId: number, attemptId: number) {
   if (attempt.status === "in_progress" && attempt.expiresAt && attempt.expiresAt.getTime() <= Date.now()) {
     await submitQuizAttempt(userId, attemptId, [], new Date());
     const [expired] = await db.select().from(quizAttempts).where(eq(quizAttempts.id, attemptId)).limit(1).all();
-    if (expired) return { attempt: publicAttempt(expired), result: resultFromAttempt(expired) };
+    if (expired) return completedAttemptDetails(expired, resultFromAttempt(expired));
   }
-  return {
-    attempt: publicAttempt(attempt),
-    result: attempt.status === "in_progress" ? null : resultFromAttempt(attempt),
-  };
+  if (attempt.status === "in_progress") return { attempt: publicAttempt(attempt), result: null, topics: [], answerReview: [] };
+  return completedAttemptDetails(attempt, resultFromAttempt(attempt));
+}
+
+function completedAttemptDetails(attempt: typeof quizAttempts.$inferSelect, result: ReturnType<typeof resultFromAttempt>) {
+  const topics = db.select().from(quizTopicResults).where(eq(quizTopicResults.attemptId, attempt.id)).orderBy(asc(quizTopicResults.topic)).all();
+  const questions = db.select().from(quizQuestions).where(eq(quizQuestions.quizVersionId, attempt.quizVersionId)).orderBy(asc(quizQuestions.sortOrder), asc(quizQuestions.id)).all();
+  const answers = db.select().from(quizAttemptAnswers).where(eq(quizAttemptAnswers.attemptId, attempt.id)).all();
+  const answerByQuestion = new Map(answers.map((answer) => [answer.questionId, answer.optionKey]));
+  const answerReview = questions.map((question) => {
+    const options = db.select({ optionKey: quizOptions.optionKey, label: quizOptions.label, isCorrect: quizOptions.isCorrect, sortOrder: quizOptions.sortOrder })
+      .from(quizOptions).where(eq(quizOptions.questionId, question.id)).orderBy(asc(quizOptions.sortOrder), asc(quizOptions.id)).all();
+    const selectedOptionKey = answerByQuestion.get(question.id) ?? null;
+    const correctOption = options.find((option) => option.isCorrect);
+    return {
+      questionId: question.id,
+      topic: question.topic,
+      prompt: question.prompt,
+      selectedOptionKey,
+      correctOptionKey: correctOption?.optionKey ?? null,
+      correct: selectedOptionKey !== null && selectedOptionKey === correctOption?.optionKey,
+      options: options.map(({ optionKey, label }) => ({ optionKey, label })),
+    };
+  });
+  return { attempt: publicAttempt(attempt), result, topics, answerReview };
 }
 
 export async function submitQuizAttempt(userId: number, attemptId: number, answers: AnswerInput[], now: QuizClock = new Date(), auditContext?: QuizAuditContext) {
@@ -368,7 +397,9 @@ export async function submitQuizAttempt(userId: number, attemptId: number, answe
     }
   }
   const finalAttempt = (await db.select().from(quizAttempts).where(eq(quizAttempts.id, graded.attempt.id)).limit(1).all())[0] ?? graded.attempt;
-  return { result: { ...resultFromAttempt(finalAttempt), pointsAwarded }, topics: graded.topicResults };
+  const result = { ...resultFromAttempt(finalAttempt), pointsAwarded };
+  const details = completedAttemptDetails(finalAttempt, result);
+  return { result, topics: details.topics, answerReview: details.answerReview };
 }
 
 export async function getJourney(userId: number) {
@@ -517,14 +548,14 @@ export async function getRankings(userId: number, scope: "bank" | "department" =
 
 export async function listChallenges(userId: number, now = new Date()) {
   validId(userId, "user ID");
-  const rows = await db.select({ id: quizChallenges.id, title: quizChallenges.title, question: quizChallenges.question, deadlineAt: quizChallenges.deadlineAt, points: quizChallenges.points, participants: sql<number>`count(${quizChallengeParticipants.id})`, joined: sql<number>`max(case when ${quizChallengeParticipants.userId} = ${userId} then 1 else 0 end)` })
+  const rows = await db.select({ id: quizChallenges.id, title: quizChallenges.title, question: quizChallenges.question, deadlineAt: quizChallenges.deadlineAt, points: quizChallenges.points, participants: sql<number>`count(${quizChallengeParticipants.id})`, ideas: sql<number>`(select count(*) from ${ideas} where ${ideas.challengeId} = ${quizChallenges.id})`, joined: sql<number>`max(case when ${quizChallengeParticipants.userId} = ${userId} then 1 else 0 end)` })
     .from(quizChallenges)
     .leftJoin(quizChallengeParticipants, eq(quizChallengeParticipants.challengeId, quizChallenges.id))
     .where(and(eq(quizChallenges.active, true), gt(quizChallenges.deadlineAt, now)))
     .groupBy(quizChallenges.id)
     .orderBy(asc(quizChallenges.deadlineAt), asc(quizChallenges.id))
     .all();
-  return rows.map((row) => ({ ...row, participants: Number(row.participants), joined: Boolean(row.joined) }));
+  return rows.map((row) => ({ ...row, participants: Number(row.participants), ideas: Number(row.ideas), joined: Boolean(row.joined) }));
 }
 
 export async function joinChallenge(userId: number, challengeId: number, idempotencyKey: string, now = new Date(), auditContext?: QuizAuditContext) {
