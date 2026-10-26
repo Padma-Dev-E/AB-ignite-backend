@@ -10,7 +10,7 @@ import { getAiJob } from "../../../../src/lib/ai/registry.js";
 import { getActiveAiPromptVersion, isManagedAiPrompt } from "../../../../src/lib/ai/prompts/catalog.js";
 import "../../../../src/lib/ai/jobs/index.js";
 import { appendAuditEvent, buildAuditRecord } from "../../../../src/lib/audit/service.js";
-import { canDevelopIdea } from "../../../../src/lib/ideas/development.js";
+import { canDevelopIdea, isAiRetryLimitReached, shouldReuseCompletedDevelopmentRun } from "../../../../src/lib/ideas/development.js";
 import { IDEA_VALIDATION_PASS_SCORE, normalizeIdeaValidationScore } from "../../../../src/lib/ideas/validation-score.js";
 import {
   CommentListQuerySchema,
@@ -503,11 +503,10 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       if (latestActive) return sendEnvelope(reply, request, { runId: latestActive.id, status: latestActive.status, versionId: version.id });
       const previous = allPrevious.filter((candidate) => candidate.promptVersion === String(promptVersion));
       const latest = previous[0];
-      // Reuse an active run, and keep completed results cached for enrichment
-      // and questions. An explicit validation action means “check again”, so a
-      // previous successful validation must not turn that click into a no-op.
-      if (latest?.status === "succeeded" && input.action !== "validate") return sendEnvelope(reply, request, { runId: latest.id, status: latest.status, versionId: version.id });
-      if (previous.length >= 3) return sendError(reply, request, "rate_limited", "This draft has reached the AI retry limit. You can continue without AI suggestions.", 429);
+      // Reuse active work, and reuse completed question generation. Enrichment
+      // and validation are explicit user actions and should create fresh runs.
+      if (latest?.status === "succeeded" && shouldReuseCompletedDevelopmentRun(input.action)) return sendEnvelope(reply, request, { runId: latest.id, status: latest.status, versionId: version.id });
+      if (isAiRetryLimitReached(input.action, previous.length)) return sendError(reply, request, "rate_limited", "This draft has reached the AI retry limit. You can continue without AI suggestions.", 429);
 
       let inputJson: string | undefined;
       let inputHash = version.contentHash;
