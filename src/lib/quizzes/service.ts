@@ -373,6 +373,16 @@ export async function submitQuizAttempt(userId: number, attemptId: number, answe
           set: { categoryCode: version.categoryCode, scorePercent: percentage(stats.correct, stats.total), thresholdPercent: threshold, reason, sourceAttemptId: attempt.id, updatedAt: now },
         }).returning().all();
         if (recommendation && !openRecommendation) tx.insert(notifications).values({ userId, type: "learning_recommendation", title: `Recommended learning: ${topic}`, body: reason, link: `/private/knowledge?topic=${encodeURIComponent(topic)}`, createdAt: now, updatedAt: now }).run();
+      } else {
+        // A retake at or above the current recommendation threshold resolves
+        // the active learning gap. Removing the open item lets a later low
+        // score create a fresh recommendation without colliding with the
+        // schema's one-row-per-user/topic/status uniqueness constraint.
+        tx.delete(quizRecommendations).where(and(
+          eq(quizRecommendations.userId, userId),
+          eq(quizRecommendations.topic, topic),
+          eq(quizRecommendations.status, "open"),
+        )).run();
       }
     });
     return { attempt: submitted, previousScorePercent, topicResults };
@@ -472,6 +482,11 @@ export async function getJourney(userId: number) {
   }
   const categories = Array.from(categoryStats.entries()).map(([categoryCode, stats]) => ({ categoryCode, scorePercent: percentage(stats.correct, stats.total), correctCount: stats.correct, totalQuestions: stats.total, quizCount: stats.quizzes.size }));
   const recommendations = await db.select().from(quizRecommendations).where(and(eq(quizRecommendations.userId, userId), eq(quizRecommendations.status, "open"))).orderBy(desc(quizRecommendations.createdAt), desc(quizRecommendations.id)).all();
+  const summary = recommendations.length
+    ? `Your latest results show ${Array.from(new Set(recommendations.slice(0, 2).map((item) => item.topic))).join(" and ")} as ${recommendations.length === 1 ? "an area" : "areas"} to build on. Keep reading and retaking quizzes to strengthen your knowledge.`
+    : rows.length
+      ? "Your recent quiz results are at or above the recommended learning thresholds. Keep taking quizzes to strengthen and maintain your knowledge."
+      : "Complete a quiz to start building your personal learning journey and get recommendations for your next steps.";
   const openRecommendations = recommendations.slice(0, 10);
   const articleCards = new Map<number, { id: number; title: string; summary: string; category: string; topic: string | null; difficulty: string; readingMinutes: number; contentType: string; sourceUrl: string | null; recommendation: typeof recommendations[number] }>();
   for (const recommendation of openRecommendations) {
@@ -516,7 +531,7 @@ export async function getJourney(userId: number) {
   if (!activityDays.has(cursor.toISOString().slice(0, 10))) cursor.setUTCDate(cursor.getUTCDate() - 1);
   while (activityDays.has(cursor.toISOString().slice(0, 10)) && streakDays < 365) { streakDays += 1; cursor.setUTCDate(cursor.getUTCDate() - 1); }
   return {
-    topics, categories, recommendations: openRecommendations, nextRecommendedStep,
+    topics, categories, recommendations: openRecommendations, summary, nextRecommendedStep,
     nextRecommendedArticle: nextArticle ? { id: nextArticle.id, title: nextArticle.title, relatedQuizId: nextArticle.relatedQuizId } : null,
     recommendedArticles,
     improvement: topics.flatMap((topic) => topic.improvement ? [{ topic: topic.topic, ...topic.improvement }] : []).slice(0, 10),

@@ -155,6 +155,34 @@
       "when": 1792764128660,
       "tag": "0021_idea_human_review_override",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1792936000000,
+      "tag": "0022_ai_prompt_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1792936000001,
+      "tag": "0023_ai_prompt_single_current_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1792936000002,
+      "tag": "0024_rebase_queued_ai_prompt_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1792940000000,
+      "tag": "0025_recover_owner_approved_ideas",
+      "breakpoints": true
     }
   ]
 }

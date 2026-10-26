@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { IdeaValidationOutputSchema } from "../../ideas/schemas";
-import { defineIdeaJob, ideaInputSchema, jsonDuplicate, jsonImpact, jsonNextAction, jsonQuestion, jsonRiskFinding, jsonRoute, jsonScores, objectResponseSchema, reviewSystemBoundary } from "./helpers";
+import { defineIdeaJob, ideaInputSchema, jsonDuplicate, jsonImpact, jsonNextAction, jsonQuestion, jsonRiskFinding, jsonRoute, jsonScores, objectResponseSchema } from "./helpers";
 
 export function weightedValidationScore(evaluation: {
   turnaroundTime: { score: number };
@@ -24,10 +24,9 @@ const humanGatedValidationSchema = IdeaValidationOutputSchema.transform((value) 
 
 export const ideaValidateJob = defineIdeaJob({
   key: "idea.validate",
-  version: "2",
+  version: "3",
   inputSchema: ideaInputSchema,
   outputSchema: humanGatedValidationSchema,
-  systemPrompt: `${reviewSystemBoundary} Score novelty, problem clarity, customer and employee impact, strategic alignment, feasibility, value, risk, urgency, and scalability from 0 to 5. Also assess three evidence-based evaluation lenses on a 0 to 3 scale: turnaroundTime (weight 30%), volume (weight 30%), savingsRevenue (weight 40%). Ground each lens rationale in facts from this proposal; call out missing baselines and use a lower score when evidence is weak. The service calculates the weighted total and converts it to overallScore out of 10, so do not try to make the two scores agree yourself. Only a score strictly above 7 passes draft validation; 7 or below means improve the draft and revalidate. Return specific evidence gaps, risks, questions, route, impact, and next actions so the author can improve a low-scoring draft. High risk or low confidence must be marked needs_human_review as an advisory for later review, regardless of score; never make a final bank decision.`,
   responseJsonSchema: objectResponseSchema({
     decision: { type: "string", enum: ["accept", "needs_clarification", "needs_human_review", "reject"] },
     recommendedStatus: { type: "string", enum: ["screening", "returned", "business_review", "control_review", "decision", "poc", "implementation", "implemented", "rejected", "deferred"] }, confidence: { type: "number", minimum: 0, maximum: 1 }, overallScore: { type: "number", minimum: 0, maximum: 10 },

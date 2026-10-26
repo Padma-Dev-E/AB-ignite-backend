@@ -5,6 +5,8 @@ import { z } from "zod";
 import { db } from "../../db/connection";
 import {
   aiRuns,
+  aiPromptCatalog,
+  aiPromptVersions,
   aiRunEvents,
   ideaAiResults,
   ideaEvents,
@@ -37,7 +39,7 @@ import { IDEA_VALIDATION_PASS_SCORE, ideaValidationPasses, normalizeIdeaValidati
 
 export type CreateIdeaVersionInput = NewIdeaVersion;
 
-export type CreateAiRunInput = NewAiRun;
+export type CreateAiRunInput = Omit<NewAiRun, "promptVersion"> & { promptVersion?: string };
 
 export const AiRunEventTypeSchema = z.enum(["queued", "running", "succeeded", "failed", "retry"]);
 export type AiRunEventType = z.infer<typeof AiRunEventTypeSchema>;
@@ -115,6 +117,14 @@ export class IdeaPriorityMinimumError extends Error {
   ) {
     super(`Priority score ${score.toFixed(2)} is below the minimum ${minimumScore.toFixed(2)}`);
     this.name = "IdeaPriorityMinimumError";
+  }
+}
+
+export class IdeaSupportConflictError extends Error {
+  readonly code = "conflict";
+  constructor(message: string) {
+    super(message);
+    this.name = "IdeaSupportConflictError";
   }
 }
 
@@ -218,7 +228,16 @@ export async function createAiRun(input: CreateAiRunInput): Promise<AiRun> {
 
   try {
     return await db.transaction((tx) => {
-      const [created] = tx.insert(aiRuns).values(input).returning().all();
+      const [catalog] = tx.select({ activeVersion: aiPromptCatalog.activeVersion }).from(aiPromptCatalog)
+        .where(eq(aiPromptCatalog.jobKey, input.jobKey)).limit(1).all();
+      const promptVersion = input.promptVersion ?? (catalog ? String(catalog.activeVersion) : null);
+      if (!promptVersion || !/^\d+$/.test(promptVersion)) throw new Error(`Active AI prompt is not configured for ${input.jobKey}`);
+      const [pinnedPrompt] = tx.select({ version: aiPromptVersions.version }).from(aiPromptVersions).where(and(
+        eq(aiPromptVersions.jobKey, input.jobKey),
+        eq(aiPromptVersions.version, Number(promptVersion)),
+      )).limit(1).all();
+      if (!pinnedPrompt) throw new Error(`Pinned AI prompt revision is unavailable for ${input.jobKey}`);
+      const [created] = tx.insert(aiRuns).values({ ...input, promptVersion }).returning().all();
       if (!created) throw new Error("AI run was not created");
       appendAiRunEventRecord(tx, created, "queued", { attempt: 0 }, created.createdAt);
       return created;
@@ -512,7 +531,7 @@ export async function supportIdea(actor: IdeaActor, ideaId: number) {
   const result = await db.transaction((tx) => {
     const [idea] = tx.select().from(ideas).where(eq(ideas.id, ideaId)).limit(1).all();
     if (!idea || idea.status === "draft") throw new Error("Idea not found");
-    if (idea.authorId === userId) throw new Error("You cannot support your own idea");
+    if (idea.authorId === userId) throw new IdeaSupportConflictError("You cannot support your own idea");
     const [createdSupport] = tx.insert(ideaSupports).values({ ideaId, userId }).onConflictDoNothing({ target: [ideaSupports.ideaId, ideaSupports.userId] }).returning().all();
     const [{ count }] = tx.select({ count: sql<number>`count(*)` }).from(ideaSupports).where(eq(ideaSupports.ideaId, ideaId)).all();
     const supports = Number(count ?? 0);

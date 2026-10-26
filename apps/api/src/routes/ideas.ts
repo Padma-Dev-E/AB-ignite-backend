@@ -3,13 +3,15 @@ import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { db } from "../../../../src/db/connection.js";
-import { aiRuns, ideaAiResults, ideaEvents, ideaSettings, ideaSubmissions, ideaVersions, ideas, notifications } from "../../../../src/db/schema.js";
+import { aiRuns, auditEvents, ideaAiResults, ideaEvents, ideaSettings, ideaSubmissions, ideaVersions, ideas, notifications } from "../../../../src/db/schema.js";
 import { getAiConfig } from "../../../../src/lib/ai/config-core.js";
 import { AiIdempotencyError, AiPolicyError, AiProviderError, AiSchemaValidationError, AiTimeoutError } from "../../../../src/lib/ai/errors.js";
 import { getAiJob } from "../../../../src/lib/ai/registry.js";
+import { getActiveAiPromptVersion, isManagedAiPrompt } from "../../../../src/lib/ai/prompts/catalog.js";
 import "../../../../src/lib/ai/jobs/index.js";
-import { appendAuditEvent } from "../../../../src/lib/audit/service.js";
+import { appendAuditEvent, buildAuditRecord } from "../../../../src/lib/audit/service.js";
 import { canDevelopIdea } from "../../../../src/lib/ideas/development.js";
+import { IDEA_VALIDATION_PASS_SCORE, normalizeIdeaValidationScore } from "../../../../src/lib/ideas/validation-score.js";
 import {
   CommentListQuerySchema,
   IdeaCommentSchema,
@@ -20,6 +22,7 @@ import {
   IdeaEnrichmentOutputSchema,
   IdeaQuestionsOutputSchema,
   IdeaValidationOutputSchema,
+  IdeaAnalysisInputSchema,
 } from "../../../../src/lib/ideas/schemas.js";
 import {
   appendIdeaEvent,
@@ -39,6 +42,7 @@ import {
   supportIdea,
   updateReturnedIdea,
   IdeaPriorityMinimumError,
+  IdeaSupportConflictError,
 } from "../../../../src/lib/ideas/repository.js";
 import { resolvePriorityPolicy, scorePriority, type PriorityMetrics } from "../../../../src/lib/ideas/priority-policy.js";
 import { runIdeaScreeningWorkflow, transitionIdeaStatus } from "../../../../src/lib/ideas/workflow.js";
@@ -55,7 +59,11 @@ const developmentSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("update"), input: IdeaUpdateSchema }),
   z.strictObject({ action: z.literal("enrich") }),
   z.strictObject({ action: z.literal("questions") }),
-  z.strictObject({ action: z.literal("validate") }),
+  z.strictObject({
+    action: z.literal("validate"),
+    answers: z.record(z.string().max(500), z.string().trim().max(1_000)).refine((answers) => Object.keys(answers).length <= 5).optional(),
+    differentiation: z.string().trim().max(2_000).optional(),
+  }),
 ]);
 
 const reviewSchema = z.strictObject({
@@ -244,11 +252,103 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       if (!idea || (idea.status === "draft" && idea.authorId !== actor.userId)) return sendError(reply, request, "not_found", "Idea not found.", 404);
       const comments = await listIdeaComments(ideaId, CommentListQuerySchema.parse(queryObject(request)));
       const submission = await getIdeaSubmissionDetails(ideaId);
-      return sendEnvelope(reply, request, { idea, comments, submission });
+      // Draft resumes need the database version ID so the employee wizard can
+      // match saved enrichment/question/validation runs to this exact version.
+      // Keep it scoped to the draft owner; public idea details do not need it.
+      let versionId: number | undefined;
+      let pendingSubmission: { status: "queued" | "running" | "succeeded"; submitForHumanReview: boolean } | undefined;
+      if (idea.status === "draft" && idea.authorId === actor.userId) {
+        const snapshot = await getAuthorizedIdeaSnapshot({ kind: "user", id: String(actor.userId) }, ideaId);
+        const versions = snapshot?.versions ?? [];
+        const latestVersion = versions.reduce<(typeof versions)[number] | undefined>(
+          (latest, version) => !latest || version.version > latest.version ? version : latest,
+          undefined,
+        );
+        versionId = latestVersion?.id;
+        if (snapshot && latestVersion) {
+          const latestPreflight = snapshot.runs
+            .filter((run) => run.ideaVersionId === latestVersion.id && run.jobKey === "idea.preflight")
+            .sort((left, right) => right.id - left.id)[0];
+          if (latestPreflight && ["queued", "running", "succeeded"].includes(latestPreflight.status)) {
+            const validations = snapshot.runs.filter((run) => run.jobKey === "idea.validate" && run.status === "succeeded");
+            const lowValidationCount = validations.filter((run) => {
+              try {
+                return normalizeIdeaValidationScore(JSON.parse(run.resultJson ?? "{}").overallScore) !== null &&
+                  normalizeIdeaValidationScore(JSON.parse(run.resultJson ?? "{}").overallScore)! <= IDEA_VALIDATION_PASS_SCORE;
+              } catch {
+                return false;
+              }
+            }).length;
+            const currentValidation = validations
+              .filter((run) => run.ideaVersionId === latestVersion.id)
+              .sort((left, right) => right.id - left.id)[0];
+            let currentScore: number | null = null;
+            try {
+              currentScore = normalizeIdeaValidationScore(JSON.parse(currentValidation?.resultJson ?? "{}").overallScore);
+            } catch { /* Corrupt validation output cannot authorize human-review routing. */ }
+            pendingSubmission = {
+              status: latestPreflight.status as "queued" | "running" | "succeeded",
+              submitForHumanReview: currentScore !== null && currentScore <= IDEA_VALIDATION_PASS_SCORE && lowValidationCount >= 2,
+            };
+          }
+        }
+      }
+      return sendEnvelope(reply, request, { idea, ...(versionId ? { versionId } : {}), ...(pendingSubmission ? { pendingSubmission } : {}), comments, submission });
     } catch (error) {
       if (error instanceof z.ZodError) return sendValidationError(reply, request);
       request.log.error({ err: error }, "Unable to load idea");
       return sendError(reply, request, "internal_error", "An unexpected server error occurred.", 500);
+    }
+  });
+
+  app.delete("/api/ideas/:id", async (request, reply) => {
+    const actor = await requireActor(app, request, reply);
+    if (!actor) return;
+    const ideaId = parseId((request.params as { id: string }).id);
+    if (!ideaId) return sendError(reply, request, "validation_error", "Invalid idea ID.", 400);
+
+    try {
+      const outcome = db.transaction((tx) => {
+        const target = tx.select({
+          id: ideas.id,
+          authorId: ideas.authorId,
+          status: ideas.status,
+          reference: ideas.reference,
+        }).from(ideas).where(eq(ideas.id, ideaId)).limit(1).get();
+
+        // Hide drafts owned by another user, just as the detail endpoint does.
+        if (!target || target.authorId !== actor.userId) return { kind: "not_found" as const };
+        if (target.status !== "draft") return { kind: "not_draft" as const };
+
+        const activeRun = tx.select({ id: aiRuns.id }).from(aiRuns)
+          .where(and(eq(aiRuns.ideaId, ideaId), inArray(aiRuns.status, ["queued", "running"])))
+          .limit(1).get();
+        if (activeRun) return { kind: "processing" as const };
+
+        const deleted = tx.delete(ideas)
+          .where(and(eq(ideas.id, ideaId), eq(ideas.authorId, actor.userId), eq(ideas.status, "draft")))
+          .returning({ id: ideas.id, reference: ideas.reference }).get();
+        if (!deleted) return { kind: "not_found" as const };
+
+        tx.insert(auditEvents).values(buildAuditRecord({
+          actorUserId: actor.userId,
+          action: "idea.draft_deleted",
+          targetType: "idea",
+          targetId: deleted.id,
+          metadata: { reference: deleted.reference },
+          ipAddress: request.ip,
+          userAgent: request.headers["user-agent"],
+        })).run();
+        return { kind: "deleted" as const, id: deleted.id };
+      });
+
+      if (outcome.kind === "not_found") return sendError(reply, request, "not_found", "Draft not found.", 404);
+      if (outcome.kind === "not_draft") return sendError(reply, request, "conflict", "Only drafts can be deleted.", 409);
+      if (outcome.kind === "processing") return sendError(reply, request, "conflict", "Wait for AI processing to finish before deleting this draft.", 409);
+      return sendEnvelope(reply, request, { id: outcome.id, deleted: true });
+    } catch (error) {
+      request.log.error({ err: error, ideaId }, "Unable to delete idea draft");
+      return sendError(reply, request, "internal_error", "Unable to delete this draft right now.", 500);
     }
   });
 
@@ -340,7 +440,19 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
         if (run.status === "succeeded" && run.resultJson) {
           try { const parsed = schema.safeParse(JSON.parse(run.resultJson)); if (parsed.success) result = parsed.data; } catch { /* Corrupt stored output is unavailable. */ }
         }
-        return { id: run.id, jobKey: run.jobKey, status: run.status, ideaVersionId: run.ideaVersionId, result, createdAt: run.createdAt, completedAt: run.completedAt };
+        return {
+          id: run.id,
+          jobKey: run.jobKey,
+          status: run.status,
+          ideaVersionId: run.ideaVersionId,
+          result,
+          // The AI runner redacts provider details before persisting these.
+          // Return only that safe message so failures are actionable in the UI.
+          errorCode: run.errorCode,
+          errorMessage: run.errorMessage,
+          createdAt: run.createdAt,
+          completedAt: run.completedAt,
+        };
       }) });
     } catch (error) {
       request.log.error({ err: error }, "Unable to load idea development");
@@ -384,11 +496,74 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       // Select the currently registered version so versioned AI output schemas
       // are used when a job has evolved (for example, idea.validate v2).
       const job = getAiJob(jobKey);
-      const previous = snapshot.runs.filter((candidate) => candidate.ideaVersionId === version.id && candidate.jobKey === job.key).sort((a, b) => b.id - a.id);
+      const promptVersion = getActiveAiPromptVersion(job.key);
+      if (!promptVersion) return sendError(reply, request, "provider_unavailable", "The active AI prompt is not configured. Contact back-office support.", 503);
+      const allPrevious = snapshot.runs.filter((candidate) => candidate.ideaVersionId === version.id && candidate.jobKey === job.key && candidate.jobVersion === job.version).sort((a, b) => b.id - a.id);
+      const latestActive = allPrevious.find((candidate) => candidate.status === "queued" || candidate.status === "running");
+      if (latestActive) return sendEnvelope(reply, request, { runId: latestActive.id, status: latestActive.status, versionId: version.id });
+      const previous = allPrevious.filter((candidate) => candidate.promptVersion === String(promptVersion));
       const latest = previous[0];
-      if (latest && !["failed", "timed_out", "cancelled"].includes(latest.status)) return sendEnvelope(reply, request, { runId: latest.id, status: latest.status, versionId: version.id });
+      // Reuse an active run, and keep completed results cached for enrichment
+      // and questions. An explicit validation action means “check again”, so a
+      // previous successful validation must not turn that click into a no-op.
+      if (latest?.status === "succeeded" && input.action !== "validate") return sendEnvelope(reply, request, { runId: latest.id, status: latest.status, versionId: version.id });
       if (previous.length >= 3) return sendError(reply, request, "rate_limited", "This draft has reached the AI retry limit. You can continue without AI suggestions.", 429);
-      const run = await createAiRun({ ideaId, ideaVersionId: version.id, jobKey: job.key, jobVersion: job.version, promptVersion: job.version, model: job.model ?? getAiConfig().model, idempotencyKey: `idea:${ideaId}:version:${version.id}:${job.key}:v${job.version}:try:${previous.length + 1}`, correlationId: request.id, requestedBy: actor.userId, inputHash: version.contentHash });
+
+      let inputJson: string | undefined;
+      let inputHash = version.contentHash;
+      if (input.action === "validate") {
+        const topicOrder = ["beneficiaries", "current_process", "needed", "risks", "success_measure"] as const;
+        const questionRun = snapshot.runs.filter((run) => run.jobKey === "idea.questions" && run.ideaVersionId === version.id && run.status === "succeeded").sort((left, right) => right.id - left.id)[0];
+        let questions: Array<{ question: string; topic?: typeof topicOrder[number] }> = [];
+        try {
+          const decoded = JSON.parse(questionRun?.resultJson ?? "{}");
+          if (Array.isArray(decoded.questions)) questions = decoded.questions;
+        } catch { /* Missing question context is allowed; idea fields remain available. */ }
+        const topicAnswers: Partial<Record<typeof topicOrder[number], string>> = {};
+        const reviewerEvidence: string[] = [];
+        questions.forEach((question, index) => {
+          const topic = question.topic ?? topicOrder[index];
+          const answer = input.answers?.[question.question]?.trim() || input.answers?.[topic]?.trim();
+          if (answer) {
+            topicAnswers[topic] = answer;
+            reviewerEvidence.push(`Reviewer answer (${topic}): ${answer}`);
+          }
+        });
+        if (reviewerEvidence.length === 0 && input.answers) {
+          for (const [topic, answer] of Object.entries(input.answers)) {
+            const cleanAnswer = answer.trim();
+            if (cleanAnswer) reviewerEvidence.push(`Reviewer answer: ${topic}: ${cleanAnswer}`);
+          }
+        }
+        const completeAnswers = topicOrder.every((topic) => Boolean(topicAnswers[topic]?.trim()));
+        const firstVersion = [...snapshot.versions].sort((left, right) => left.version - right.version)[0];
+        const originalDescription = firstVersion?.summary.trim() ?? "";
+        const originalDescriptionEvidence: string[] = [];
+        for (let offset = 0; offset < originalDescription.length; offset += 850) {
+          const chunk = originalDescription.slice(offset, offset + 850);
+          originalDescriptionEvidence.push(`${offset === 0 ? "Original employee description" : "Original description (continued)"}: ${chunk}`);
+        }
+        const validationInput = IdeaAnalysisInputSchema.parse({
+          kind: version.kind,
+          title: version.title,
+          summary: version.summary,
+          problem: version.problem ?? undefined,
+          solution: version.solution ?? undefined,
+          benefits: version.benefits ?? undefined,
+          risks: version.risks ?? undefined,
+          category: version.category,
+          dataClassification: version.dataClassification,
+          reference: snapshot.idea.reference,
+          buildsOnId: snapshot.idea.buildsOnId ?? undefined,
+          differentiation: input.differentiation,
+          ...(completeAnswers ? { answers: Object.fromEntries(topicOrder.map((topic) => [topic === "current_process" ? "currentProcess" : topic === "success_measure" ? "successMeasure" : topic, topicAnswers[topic]!])) } : {}),
+          evidence: [...originalDescriptionEvidence, ...reviewerEvidence].slice(0, 20),
+          relatedIdeas: [],
+        });
+        inputJson = JSON.stringify(validationInput);
+        inputHash = createHash("sha256").update(inputJson).digest("hex");
+      }
+      const run = await createAiRun({ ideaId, ideaVersionId: version.id, jobKey: job.key, jobVersion: job.version, promptVersion: String(promptVersion), inputJson, model: job.model ?? getAiConfig().model, idempotencyKey: `idea:${ideaId}:version:${version.id}:${job.key}:v${job.version}:p${promptVersion}:try:${previous.length + 1}`, correlationId: request.id, requestedBy: actor.userId, inputHash });
       if (run.correlationId === request.id) {
         await appendIdeaEvent({ ideaId, ideaVersionId: version.id, actorType: "user", actorId: actor.userId, eventType: `${input.action}_queued`, correlationId: request.id, metadataJson: JSON.stringify({ runId: run.id }) });
         appendAuditEvent({ actorUserId: actor.userId, action: `idea.${input.action}_queued`, targetType: "idea", targetId: ideaId, metadata: { runId: run.id, versionId: version.id } });
@@ -434,7 +609,11 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       if (!snapshot) return sendError(reply, request, "not_found", "Idea not found.", 404);
       const [failed] = await db.select().from(aiRuns).where(eq(aiRuns.ideaId, ideaId)).orderBy(desc(aiRuns.createdAt)).limit(1).all();
       if (!failed || !["failed", "timed_out"].includes(failed.status)) return sendError(reply, request, "conflict", "There is no failed AI run to retry.", 409);
-      const retry = await createAiRun({ ideaId: failed.ideaId, ideaVersionId: failed.ideaVersionId, jobKey: failed.jobKey, jobVersion: failed.jobVersion, promptVersion: failed.promptVersion, model: failed.model, idempotencyKey: `${failed.idempotencyKey}:retry:${Date.now()}`, correlationId: request.id, requestedBy: actor.userId, inputHash: failed.inputHash });
+      if (!isManagedAiPrompt(failed.jobKey)) return sendError(reply, request, "conflict", "This AI job is no longer active and cannot be retried.", 409);
+      const currentJob = getAiJob(failed.jobKey);
+      const currentPromptVersion = getActiveAiPromptVersion(failed.jobKey);
+      if (!currentPromptVersion) return sendError(reply, request, "provider_unavailable", "The active AI prompt is not configured. Contact back-office support.", 503);
+      const retry = await createAiRun({ ideaId: failed.ideaId, ideaVersionId: failed.ideaVersionId, jobKey: failed.jobKey, jobVersion: currentJob.version, promptVersion: String(currentPromptVersion), model: failed.model, idempotencyKey: `${failed.idempotencyKey}:retry:${Date.now()}`, correlationId: request.id, requestedBy: actor.userId, inputHash: failed.inputHash });
       await appendIdeaEvent({ ideaId, ideaVersionId: failed.ideaVersionId, actorType: "admin", actorId: actor.userId, eventType: "ai_retry_requested", correlationId: request.id, metadataJson: JSON.stringify({ previousRunId: failed.id, runId: retry.id }) });
       return sendEnvelope(reply, request, { runId: retry.id, status: retry.status }, 202);
     } catch (error) {
@@ -498,9 +677,12 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
     const ideaId = Number((request.params as { id: string }).id);
     try {
       const input = reviewSchema.parse(request.body);
-      const target = input.decision === "approved" ? (actor.role === "business_owner" ? "control_review" : "decision") : input.decision;
+      const target = input.decision === "approved" ? "decision" : input.decision;
       const updated = await transitionIdeaStatus({ kind: actor.role, id: String(actor.userId) }, ideaId, target, input.reason);
       const review = await recordHumanReview({ ideaId, reviewerId: actor.userId, decision: input.decision, reason: input.reason, conflictAcknowledged: input.conflictAcknowledged });
+      if (actor.role === "business_owner" && input.decision === "approved") {
+        await appendIdeaEvent({ ideaId, actorType: "admin", actorId: actor.userId, eventType: "business_owner_approved", fromStatus: "business_review", toStatus: "decision", metadataJson: JSON.stringify({ reason: input.reason, action: "approve", requiresControlApproval: false, requiredControls: [] }) });
+      }
       return sendEnvelope(reply, request, { idea: updated, review }, 201);
     } catch (error) {
       if (error instanceof z.ZodError) return sendValidationError(reply, request);
@@ -519,6 +701,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       if (!idea || idea.status === "draft") return sendError(reply, request, "not_found", "Idea not found.", 404);
       return sendEnvelope(reply, request, await supportIdea(actorFor(actor), ideaId));
     } catch (error) {
+      if (error instanceof IdeaSupportConflictError) return sendError(reply, request, error.code, error.message, 409);
       request.log.error({ err: error }, "Unable to support idea");
       return sendError(reply, request, "internal_error", "An unexpected server error occurred.", 500);
     }

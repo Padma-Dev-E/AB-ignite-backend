@@ -18,6 +18,10 @@ const ALLOWED_METADATA_KEYS = new Set([
   "permission",
   "provider",
   "requestId",
+  "promptKey",
+  "promptVersion",
+  "previousPromptVersion",
+  "contentHash",
 ]);
 
 export function hashAuditValue(value: string | null | undefined): string | null {

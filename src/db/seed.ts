@@ -6,6 +6,7 @@ import { users } from "./schema";
 import { hashPassword } from "../auth/password-core";
 import { ensureQuizCatalogue } from "../lib/quizzes/seed";
 import { ensureArticleCatalogue } from "../lib/articles/seed";
+import { ensureAiPromptCatalogue } from "../lib/ai/prompts/catalog";
 
 const email = (process.env.DEFAULT_ADMIN_EMAIL ?? "admin@admin.com").trim().toLowerCase();
 const defaultAdminPassword = process.env.DEFAULT_ADMIN_PASSWORD ?? "Test@123";
@@ -13,6 +14,7 @@ const defaultAdminPassword = process.env.DEFAULT_ADMIN_PASSWORD ?? "Test@123";
 async function main() {
   ensureQuizCatalogue();
   ensureArticleCatalogue();
+  ensureAiPromptCatalogue();
   const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
 
   if (existing) {

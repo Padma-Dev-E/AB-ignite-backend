@@ -146,7 +146,7 @@ const roleSchema = z.strictObject({ role: z.enum(["employee", "back_office", "bu
 const activationSchema = z.strictObject({ active: z.boolean(), reason: z.unknown() });
 const decisionSchema = z.strictObject({
   action: z.enum(["route", "return", "reject", "defer", "accept", "approve", "not_recommended", "confirm", "start_implementation", "mark_implemented"]),
-  reason: z.string().trim().min(1).max(500),
+  reason: z.string().trim().max(500).optional(),
   businessOwnerId: z.number().int().positive().optional(),
   dueAt: z.iso.datetime({ offset: true }).nullable().optional(),
   controlName: z.string().trim().min(1).max(500).optional(),

@@ -72,7 +72,15 @@ async function processClaimedAiRun(workerId: string, claimed: NonNullable<Awaite
     return { status: "failed", runId: claimed.id };
   }
   try {
-    const input = inputFromVersion(version);
+    let input: unknown;
+    try {
+      input = claimed.inputJson
+        ? job.inputSchema.parse(JSON.parse(claimed.inputJson))
+        : inputFromVersion(version);
+    } catch {
+      await failAiRun(claimed.id, { errorCode: "ai_input_invalid", errorMessage: "The AI input snapshot is invalid" });
+      return { status: "failed", runId: claimed.id };
+    }
     const safeInput = evaluateAiInput(input, job.safety);
     if (!safeInput.allowed) {
       await failAiRun(claimed.id, { errorCode: safeInput.code, errorMessage: safeInput.reason });

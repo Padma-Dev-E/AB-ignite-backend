@@ -7,6 +7,7 @@ import { getAiJob } from "./registry";
 import type { SafeAiInput } from "./policy";
 import type { AiJobDefinition, AiRunnerDependencies, AiRunResult, RunStructuredAiArgs } from "./types";
 import type { AiRun } from "../../db/schema";
+import { getAiPromptVersion } from "./prompts/catalog";
 import {
   appendIdeaEvent,
   claimAiRun,
@@ -84,9 +85,11 @@ export async function executeClaimedAiRun<TInput, TOutput>(
   await semaphore.acquire();
   const started = Date.now();
   try {
+    const prompt = getAiPromptVersion(claimed.jobKey, claimed.promptVersion);
+    if (!prompt) throw new AiSchemaValidationError("The prompt revision pinned to this AI run is unavailable");
     const response = await dependencies.provider.generateStructured({
       model: claimed.model,
-      systemPrompt: job.systemPrompt,
+      systemPrompt: prompt.systemPrompt,
       userContent: job.buildInput(args.input, safeInput),
       responseMimeType: "application/json",
       responseJsonSchema: job.responseJsonSchema,
@@ -105,7 +108,7 @@ export async function executeClaimedAiRun<TInput, TOutput>(
     });
     await appendIdeaEvent({ ideaId: args.ideaId, actorType: "ai", eventType: "ai_completed", correlationId: args.correlationId, metadataJson: JSON.stringify({ jobKey: job.key, runId: claimed.id }) });
     return {
-      runId: String(claimed.id), jobKey: job.key, jobVersion: job.version, promptVersion: job.version,
+      runId: String(claimed.id), jobKey: job.key, jobVersion: job.version, promptVersion: claimed.promptVersion,
       model: claimed.model, data: parsedOutput.data, attempts: claimed.attemptCount, latencyMs: Date.now() - started,
       usage: response.usage, finishReason: response.finishReason,
     };
@@ -133,7 +136,6 @@ export async function runStructuredAi<TInput, TOutput>(
     ideaVersionId: args.ideaVersionId,
     jobKey: job.key,
     jobVersion: job.version,
-    promptVersion: job.version,
     model: job.model ?? dependencies.model ?? "gemini-3.8-flash",
     idempotencyKey: args.idempotencyKey,
     correlationId: args.correlationId,

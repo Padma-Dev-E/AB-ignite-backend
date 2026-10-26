@@ -22,6 +22,17 @@ if (internalApiToken.length < 32) throw new Error("INTERNAL_API_TOKEN must conta
 
 const rawDatabaseUrl = process.env.DATABASE_URL ?? "./data/ab-ignite.db";
 const databaseUrl = rawDatabaseUrl.startsWith("file:") ? rawDatabaseUrl.slice(5) : rawDatabaseUrl;
+function secureAuthCookies(): boolean {
+  const configuredUrl = process.env.AUTH_URL ?? process.env.NEXTAUTH_URL;
+  if (!configuredUrl) return process.env.NODE_ENV === "production";
+  try {
+    const url = new URL(configuredUrl);
+    const localHost = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+    return url.protocol === "https:" || !(url.protocol === "http:" && localHost);
+  } catch {
+    return process.env.NODE_ENV === "production";
+  }
+}
 
 export const env = Object.freeze({
   nodeEnv: process.env.NODE_ENV ?? "development",
@@ -31,7 +42,7 @@ export const env = Object.freeze({
   internalApiToken,
   sessionCookieName: SESSION_COOKIE_NAME,
   refreshCookieName: REFRESH_COOKIE_NAME,
-  secureCookies: process.env.NODE_ENV === "production",
+  secureCookies: secureAuthCookies(),
   databaseUrl: resolve(process.cwd(), databaseUrl),
   trustProxy: process.env.API_TRUST_PROXY ?? "127.0.0.1,::1",
   allowedOrigins: (process.env.API_ALLOWED_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),

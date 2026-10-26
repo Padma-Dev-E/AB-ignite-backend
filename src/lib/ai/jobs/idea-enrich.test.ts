@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ideaEnrichJob } from "./idea-enrich";
+import { aiPromptSeeds } from "../prompts/seed-data";
 
 test("enrichment prompt uses the submitted idea context and avoids invented evidence", () => {
-  assert.match(ideaEnrichJob.systemPrompt, /title, summary, problem, solution, benefits, risks, category/i);
-  assert.match(ideaEnrichJob.systemPrompt, /answers.*metrics.*evidence.*relatedIdeas.*differentiation/i);
-  assert.match(ideaEnrichJob.systemPrompt, /do not invent|never invent|unsupported claims/i);
-  assert.match(ideaEnrichJob.systemPrompt, /suggestedTitle/i);
+  const prompt = aiPromptSeeds.find((item) => item.jobKey === "idea.enrich")?.systemPrompt ?? "";
+  assert.match(prompt, /title, summary, problem, solution, benefits, risks, category/i);
+  assert.match(prompt, /answers.*metrics.*evidence.*relatedIdeas.*differentiation/i);
+  assert.match(prompt, /do not invent|never invent|unsupported claims/i);
+  assert.match(prompt, /suggestedTitle/i);
 });
 
 test("enrichment JSON schema describes concise, usable proposal fields", () => {

@@ -144,6 +144,31 @@ export const ideaReferenceSequences = sqliteTable("idea_reference_sequences", {
   lastValue: integer().notNull().default(0),
 });
 
+export const aiPromptCatalog = sqliteTable("ai_prompt_catalog", {
+  jobKey: text().primaryKey(),
+  name: text().notNull(),
+  description: text().notNull(),
+  activeVersion: integer().notNull(),
+  createdAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+});
+
+export const aiPromptVersions = sqliteTable("ai_prompt_versions", {
+  id: integer().primaryKey({ autoIncrement: true }),
+  jobKey: text().notNull().references(() => aiPromptCatalog.jobKey, { onDelete: "cascade" }),
+  version: integer().notNull(),
+  systemPrompt: text().notNull(),
+  contentHash: text().notNull(),
+  createdBy: integer().references(() => users.id, { onDelete: "set null" }),
+  reason: text(),
+  isDefault: integer({ mode: "boolean" }).notNull().default(false),
+  schemaVersion: text().notNull(),
+  createdAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+}, (table) => [
+  uniqueIndex("ai_prompt_versions_key_version_unique").on(table.jobKey, table.version),
+  index("ai_prompt_versions_hash_idx").on(table.contentHash),
+]);
+
 export const aiRuns = sqliteTable("ai_runs", {
   id: integer().primaryKey({ autoIncrement: true }),
   ideaId: integer().notNull().references(() => ideas.id, { onDelete: "cascade" }),
@@ -151,6 +176,7 @@ export const aiRuns = sqliteTable("ai_runs", {
   jobKey: text().notNull(),
   jobVersion: text().notNull(),
   promptVersion: text().notNull(),
+  inputJson: text(),
   model: text().notNull(),
   status: text({ enum: ["queued", "running", "succeeded", "failed", "timed_out", "cancelled"] }).notNull().default("queued"),
   idempotencyKey: text().notNull(),
@@ -804,6 +830,8 @@ export const schema = {
   ideaSubmissions,
   ideaSettings,
   ideaReferenceSequences,
+  aiPromptCatalog,
+  aiPromptVersions,
   ideaVersions,
   aiRuns,
   aiRunEvents,

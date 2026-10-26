@@ -12,6 +12,8 @@ export const CAPABILITIES = {
   REWARDS_MANAGE: "rewards.manage",
   AI_RUNS_READ: "ai.runs.read",
   AI_RUNS_MANAGE: "ai.runs.manage",
+  AI_PROMPTS_READ: "ai.prompts.read",
+  AI_PROMPTS_MANAGE: "ai.prompts.manage",
   GOVERNANCE_READ: "governance.read",
   GOVERNANCE_MANAGE: "governance.manage",
 } as const;

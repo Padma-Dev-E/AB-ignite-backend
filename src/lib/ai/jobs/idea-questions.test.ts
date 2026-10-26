@@ -1,22 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ideaQuestionsJob } from "./idea-questions";
+import { aiPromptSeeds } from "../prompts/seed-data";
 
-test("question prompt requires idea-specific questions and permits complete ideas", () => {
-  assert.match(ideaQuestionsJob.systemPrompt, /specific idea/i);
-  assert.match(ideaQuestionsJob.systemPrompt, /reference.*concrete|concrete.*detail/i);
-  assert.match(ideaQuestionsJob.systemPrompt, /generic questionnaire|generic questions/i);
-  assert.match(ideaQuestionsJob.systemPrompt, /empty questions array/i);
-  assert.match(ideaQuestionsJob.systemPrompt, /beneficiaries, currentProcess, needed, risks, successMeasure/i);
+test("question prompt maps idea-specific follow-ups to the five required review topics", () => {
+  const prompt = aiPromptSeeds.find((item) => item.jobKey === "idea.questions")?.systemPrompt ?? "";
+  assert.match(prompt, /specific idea/i);
+  assert.match(prompt, /exactly five follow-up questions/i);
+  assert.match(prompt, /Who benefits/i);
+  assert.match(prompt, /What happens today/i);
+  assert.match(prompt, /What is needed/i);
+  assert.match(prompt, /What could go wrong/i);
+  assert.match(prompt, /How is success measured/i);
+  assert.match(prompt, /corresponding answer/i);
 });
 
-test("question schema constrains the number and content of generated questions", () => {
+test("question schema requires five questions with a required topic label", () => {
   const response = ideaQuestionsJob.responseJsonSchema.properties ?? {};
   const questionArray = response.questions;
-  assert.equal(questionArray?.maxItems, 8);
+  assert.equal(questionArray?.minItems, 5);
+  assert.equal(questionArray?.maxItems, 5);
   const question = questionArray?.items?.properties ?? {};
+  assert.deepEqual(question.topic?.enum, ["beneficiaries", "current_process", "needed", "risks", "success_measure"]);
   assert.ok(question.question?.description);
   assert.ok(question.reason?.description);
+  assert.ok(questionArray?.items?.required?.includes("topic"));
   assert.deepEqual(question.answerType?.enum, ["text", "number", "boolean", "date", "choice"]);
 });
 

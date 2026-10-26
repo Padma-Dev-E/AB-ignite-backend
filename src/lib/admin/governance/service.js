@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../../db/connection";
 import { aiRuns, auditEvents, ideaEvents, ideaReviews, ideaSettings, ideaSubmissions, ideas, notifications, refreshTokens, users } from "../../../db/schema";
 import { isSessionActive } from "../../../auth/security-core";
-import { AuthorizationError, requirePrivilegedReason } from "../../auth/authorization-core";
+import { AuthorizationError } from "../../auth/authorization-core";
 import { buildAuditRecord } from "../../audit/service";
 import { AdminConflictError, AdminNotFoundError } from "../query";
 import { resolveRequiredControlsPolicy } from "../settings/validation";
@@ -53,6 +53,22 @@ function approvedControls(tx, ideaId) {
 }
 function queueDueAt(item, days, startAt = item.createdAt) {
     return { ...item, dueAt: item.dueAt ?? new Date(startAt.getTime() + days * 86_400_000) };
+}
+function governanceAuditMessage(action, role, reference, from) {
+    const actionMessages = {
+        route: "routed to business-owner review",
+        return: "returned for revision",
+        reject: "rejected",
+        defer: "deferred",
+        accept: "accepted for proof of concept",
+        approve: from === "control_review" ? "approved at control review" : "approved by the business owner",
+        not_recommended: from === "control_review" ? "not recommended at control review" : "not recommended by the business owner",
+        confirm: "confirmed for proof of concept",
+        start_implementation: "moved into implementation",
+        mark_implemented: "marked as implemented",
+    };
+    const actor = role === "business_owner" ? "Business owner" : "Back office";
+    return `${actor} ${actionMessages[action] ?? "updated"} ${reference} from ${from.replaceAll("_", " ")}.`;
 }
 export async function listBusinessOwners(actor, limit = 100, after = null) {
     await requireGovernanceRole(actor, ["back_office"]);
@@ -129,7 +145,6 @@ export async function getEvaluation(ideaId, actor) {
     return { idea, submission: submission ? { answers: parsed(submission.answersJson), metrics, breakdown, score: submission.score, minimumScore: submission.minimumScore, validationPassed: submission.validationPassed, aiValidationScore: submission.aiValidationScore, aiValidationAttempts: submission.aiValidationAttempts, submittedWithLowAiScore: submission.submittedWithLowAiScore, differentiation: submission.differentiation, submittedAt: submission.submittedAt } : null, assessment: assessment ? { jobKey: assessment.jobKey, completedAt: assessment.completedAt, result: parsed(assessment.resultJson) } : null, route: route ? { ...parsed(route.metadataJson), createdAt: route.createdAt } : null, controlReview: idea.status === "control_review" ? { required, approved: required.filter((name) => approved.has(name.toLowerCase())), pending: required.filter((name) => !approved.has(name.toLowerCase())) } : null };
 }
 export async function decideGovernance(actor, ideaId, action, reasonInput, businessOwnerId, dueAt, idempotencyKey, controlName) {
-    const reason = requirePrivilegedReason(reasonInput);
     const now = new Date();
     return db.transaction((tx) => {
         const role = assertActor(tx, actor, now);
@@ -137,8 +152,9 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
         if (!idea || idea.status === "draft")
             throw new AdminNotFoundError("Idea not found.");
         const from = idea.status;
-        const controlsSetting = tx.select({ value: ideaSettings.value }).from(ideaSettings).where(eq(ideaSettings.key, "required_controls")).get();
-        const controlPolicy = resolveRequiredControlsPolicy(controlsSetting?.value);
+        const reason = governanceAuditMessage(action, role, idea.reference, from);
+        const controlsSetting = from === "control_review" ? tx.select({ value: ideaSettings.value }).from(ideaSettings).where(eq(ideaSettings.key, "required_controls")).get() : undefined;
+        const controlPolicy = from === "control_review" ? resolveRequiredControlsPolicy(controlsSetting?.value) : { configured: false, controls: [], requiresControlApproval: false };
         const requiresControlApproval = controlPolicy.requiresControlApproval;
         const snapshot = from === "control_review" || action === "approve" || action === "confirm" ? controlSnapshot(tx, ideaId) : null;
         const requiredNames = snapshot?.requiredControls ?? [];
@@ -160,7 +176,7 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
             if (prior) {
                 const metadata = parsed(prior.metadataJson);
                 const requestedDueAt = metadata && Object.hasOwn(metadata, "requestedDueAt") ? metadata.requestedDueAt : metadata?.dueAt;
-                if (prior.actorId !== actor.userId || metadata?.action !== action || metadata.reason !== reason || (action === "route" && (metadata.businessOwnerId !== businessOwnerId || requestedDueAt !== (dueAt?.toISOString() ?? null))) || (action === "approve" && prior.fromStatus === "control_review" && metadata.controlName?.toLowerCase() !== (controlName ?? (requiredNames.length === 1 ? requiredNames[0] : undefined))?.toLowerCase()))
+            if (prior.actorId !== actor.userId || metadata?.action !== action || (action === "route" && (metadata.businessOwnerId !== businessOwnerId || requestedDueAt !== (dueAt?.toISOString() ?? null))) || (action === "approve" && prior.fromStatus === "control_review" && metadata.controlName?.toLowerCase() !== (controlName ?? (requiredNames.length === 1 ? requiredNames[0] : undefined))?.toLowerCase()))
                     throw new AdminConflictError("Idempotency key was used for a different request.");
                 return { ideaId, action, fromStatus: prior.fromStatus, toStatus: prior.toStatus };
             }
@@ -176,7 +192,7 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
                 throw new AdminConflictError("A different control reviewer must approve each required control.");
         }
         const controlsComplete = !requiredNames.length || requiredNames.every((name) => name === approvedControlName || priorControls?.names.has(name.toLowerCase()));
-        const targets = { route: "business_review", return: "returned", reject: "rejected", defer: "deferred", accept: "poc", approve: from === "control_review" ? controlsComplete ? "decision" : "control_review" : !requiresControlApproval ? "decision" : "control_review", not_recommended: "rejected", confirm: "poc", start_implementation: "implementation", mark_implemented: "implemented" };
+        const targets = { route: "business_review", return: "returned", reject: "rejected", defer: "deferred", accept: "poc", approve: from === "control_review" ? controlsComplete ? "decision" : "control_review" : "decision", not_recommended: "rejected", confirm: "poc", start_implementation: "implementation", mark_implemented: "implemented" };
         if (action === "route" && (from !== "screening" || !businessOwnerId))
             throw new AdminConflictError("Only screening ideas can be routed to a business owner.");
         if (action === "accept" && from !== "screening")
@@ -202,10 +218,6 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
             const types = new Set(events.map(({ eventType }) => eventType));
             if (!types.has("business_owner_approved"))
                 throw new AdminConflictError("Business owner approval is required before confirmation.");
-            const approvalMetadata = parsed(events.find((event) => event.eventType === "business_owner_approved")?.metadataJson ?? null);
-            const controlRequiredForIdea = typeof approvalMetadata?.requiresControlApproval === "boolean" ? approvalMetadata.requiresControlApproval : requiresControlApproval;
-            if (controlRequiredForIdea && (!types.has("control_approved") || (requiredNames.length > 0 && !priorControls?.legacyApproval && !requiredNames.every((name) => priorControls?.names.has(name.toLowerCase())))))
-                throw new AdminConflictError("All required controls must approve before confirmation.");
         }
         if (action === "route") {
             const owner = tx.select({ id: users.id, role: users.role, isActive: users.isActive }).from(users).where(eq(users.id, businessOwnerId)).limit(1).get();
@@ -242,7 +254,7 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
             const accepted = action === "accept" || action === "confirm";
             tx.insert(notifications).values({ userId: idea.authorId, type: accepted ? "idea_accepted" : "idea_status_changed", title: accepted ? "Idea accepted for proof of concept" : "Idea workflow updated", body: accepted ? `Congratulations, ${idea.reference} has been accepted for proof of concept.` : `${idea.reference} moved from ${from} to ${to}.`, link: `/ideas/${ideaId}` }).run();
         }
-        tx.insert(auditEvents).values(buildAuditRecord({ actorUserId: actor.userId, sessionId: actor.sessionId, action: `admin.governance.${action}`, targetType: "idea", targetId: ideaId, reason, requiresReason: true, metadata: { fromStatus: from, toStatus: to, businessOwnerId: action === "route" ? businessOwnerId : null, controlName: approvedControlName ?? null, dueAt: action === "route" ? tx.select({ dueAt: ideas.dueAt }).from(ideas).where(eq(ideas.id, ideaId)).get()?.dueAt?.toISOString() ?? null : null }, ipAddress: actor.ipAddress, userAgent: actor.userAgent }, now)).run();
+        tx.insert(auditEvents).values(buildAuditRecord({ actorUserId: actor.userId, sessionId: actor.sessionId, action: `admin.governance.${action}`, targetType: "idea", targetId: ideaId, reason, requiresReason: false, metadata: { fromStatus: from, toStatus: to, businessOwnerId: action === "route" ? businessOwnerId : null, controlName: approvedControlName ?? null, dueAt: action === "route" ? tx.select({ dueAt: ideas.dueAt }).from(ideas).where(eq(ideas.id, ideaId)).get()?.dueAt?.toISOString() ?? null : null }, ipAddress: actor.ipAddress, userAgent: actor.userAgent }, now)).run();
         return { ideaId, action, fromStatus: from, toStatus: to };
     });
 }

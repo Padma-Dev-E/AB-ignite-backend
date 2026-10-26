@@ -61,7 +61,6 @@ export type AiJobDefinition<TInput, TOutput> = {
   key: string;
   version: string;
   model?: string;
-  systemPrompt: string;
   inputSchema: ZodType<TInput>;
   outputSchema: ZodType<TOutput>;
   responseJsonSchema: JsonSchema;

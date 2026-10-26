@@ -13,7 +13,7 @@ export type IdeaStatus = "screening" | "returned" | "business_review" | "control
 const transitions: Record<IdeaStatus, IdeaStatus[]> = {
   screening: ["returned", "business_review", "control_review", "poc"],
   returned: ["screening", "business_review"],
-  business_review: ["returned", "control_review", "decision"],
+  business_review: ["returned", "decision"],
   control_review: ["returned", "decision"],
   decision: ["poc", "rejected", "deferred"],
   poc: ["implementation", "decision", "deferred"],
@@ -30,7 +30,7 @@ export function canTransitionIdeaStatus(actor: IdeaWorkflowActor, from: IdeaStat
   if (!transitions[from]?.includes(to)) return false;
   if (actor.kind === "system") return from === "screening" && ["returned", "business_review", "control_review"].includes(to);
   if (actor.kind === "back_office") return ["screening", "control_review", "decision", "poc", "implementation", "deferred"].includes(from);
-  if (actor.kind === "business_owner") return from === "business_review" && ["returned", "control_review", "decision"].includes(to);
+  if (actor.kind === "business_owner") return from === "business_review" && ["returned", "decision"].includes(to);
   return false;
 }
 
@@ -80,7 +80,6 @@ export async function runIdeaScreeningWorkflow(ideaId: number, versionId: number
     ideaVersionId: version.id,
     jobKey: job.key,
     jobVersion: job.version,
-    promptVersion: job.version,
     model: job.model ?? getAiConfig().model,
     idempotencyKey: idempotencyKey ?? `idea:${ideaId}:version:${version.id}:idea.preflight:v1`,
     correlationId: `idea:${ideaId}:version:${version.id}`,

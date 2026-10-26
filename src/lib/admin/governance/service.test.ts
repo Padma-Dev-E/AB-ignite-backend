@@ -47,7 +47,6 @@ test("back-office governance and business-owner decisions enforce current assign
   const employee = principal("employee");
   const reviewer = principal("reviewer");
   const owner = principal("business_owner");
-  const control = principal("control");
   const management = principal("management");
   const idea = db.insert(ideas).values({ authorId: employee.userId, title: "RBAC idea", summary: "Test", category: "Technology", reference: `ABI-RBAC-${stamp}` }).returning({ id: ideas.id }).get();
   await assert.rejects(requireGovernanceRole(employee, ["back_office"]));
@@ -60,14 +59,10 @@ test("back-office governance and business-owner decisions enforce current assign
   await assert.rejects(decideGovernance(reviewer, idea.id, "confirm", "final confirmation"));
   await assert.rejects(decideGovernance(reviewer, idea.id, "approve", "owner only"));
   await decideGovernance(owner, idea.id, "approve", "business case approved");
-  assert.equal(db.select().from(ideas).where(eq(ideas.id, idea.id)).get()?.status, "control_review");
-  assert.ok((await listRoutedEvaluations(control)).items.some((item) => item.id === idea.id));
+  assert.equal(db.select().from(ideas).where(eq(ideas.id, idea.id)).get()?.status, "decision");
+  assert.ok((await listTransformationQueue()).items.some((item) => item.id === idea.id));
   assert.equal((await listRoutedEvaluations(owner)).items.some((item) => item.id === idea.id), false);
   assert.ok(db.select().from(ideaReviews).all().some((review) => review.ideaId === idea.id && review.reviewerId === owner.userId));
-  await assert.rejects(decideGovernance(reviewer, idea.id, "confirm", "premature confirmation"));
-  await decideGovernance(control, idea.id, "approve", "control review passed");
-  assert.equal(db.select().from(ideas).where(eq(ideas.id, idea.id)).get()?.status, "decision");
-  assert.ok(db.select().from(ideaEvents).all().some((event) => event.ideaId === idea.id && event.eventType === "control_approved"));
   await decideGovernance(reviewer, idea.id, "confirm", "accepted for proof of concept");
   assert.equal(db.select().from(ideas).where(eq(ideas.id, idea.id)).get()?.status, "poc");
   assert.ok((await listDeliveryQueue(reviewer)).items.some((item) => item.id === idea.id));
@@ -117,23 +112,21 @@ test("governance detail and owner list require the actual authorized session and
   await assert.rejects(decideGovernance(otherOwner, idea.id, "approve", "Not assigned"));
 });
 
-test("confirmation queue contains only owner-approved ideas ready for confirmation", async () => {
+test("owner-approved ideas appear in the transformation confirmation queue", async () => {
   const stamp = `${Date.now()}-${Math.random()}`;
   const make = (profile: string) => {
     const user = db.insert(users).values({ name: profile, email: `${profile}-queue-${stamp}@example.test`, role: profile === "business_owner" ? "business_owner" : profile === "employee" ? "employee" : "back_office", passwordHash: "test" }).returning({ id: users.id }).get();
     const session = db.insert(refreshTokens).values({ userId: user.id, tokenHash: `${profile}-queue-${stamp}`, expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning({ id: refreshTokens.id }).get();
     return { userId: user.id, sessionId: session.id };
   };
-  const employee = make("employee"), reviewer = make("reviewer"), owner = make("business_owner"), control = make("control");
+  const employee = make("employee"), reviewer = make("reviewer"), owner = make("business_owner");
   const idea = db.insert(ideas).values({ authorId: employee.userId, title: "Queue stages", summary: "Only awaiting confirmation", category: "Technology", reference: `ABI-QUEUE-${stamp}` }).returning({ id: ideas.id }).get();
   assert.ok((await listScreeningQueue(100)).items.find((row) => row.id === idea.id)?.dueAt instanceof Date);
   await decideGovernance(reviewer, idea.id, "route", "Owner assessment", owner.userId);
   await decideGovernance(owner, idea.id, "approve", "Business approved");
-  assert.equal((await listTransformationQueue(100)).items.some((row) => row.id === idea.id), false);
-  await decideGovernance(control, idea.id, "approve", "Control approved");
-  assert.ok(db.select({ dueAt: ideas.dueAt }).from(ideas).where(eq(ideas.id, idea.id)).get()?.dueAt);
   const confirmation = (await listTransformationQueue(100)).items.find((row) => row.id === idea.id);
   assert.ok(confirmation);
+  assert.ok(db.select({ dueAt: ideas.dueAt }).from(ideas).where(eq(ideas.id, idea.id)).get()?.dueAt);
   assert.ok(confirmation.dueAt && confirmation.dueAt.getTime() > Date.now() + 2 * 86_400_000);
   await decideGovernance(reviewer, idea.id, "confirm", "Accept idea");
   assert.equal((await listTransformationQueue(100)).items.some((row) => row.id === idea.id), false);
@@ -172,7 +165,7 @@ test("a policy change after owner approval does not add a new control gate", asy
   }
 });
 
-test("SLA limits routing and named controls require separate audited approvals", async () => {
+test("SLA limits routing and owner approval reaches transformation despite hidden legacy controls", async () => {
   const stamp = `${Date.now()}-${Math.random()}`;
   let sequence = 0;
   const make = (profile: string) => {
@@ -181,7 +174,7 @@ test("SLA limits routing and named controls require separate audited approvals",
     const session = db.insert(refreshTokens).values({ userId: user.id, tokenHash: `${profile}-enforcement-${suffix}`, expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning({ id: refreshTokens.id }).get();
     return { userId: user.id, sessionId: session.id };
   };
-  const employee = make("employee"), reviewer = make("reviewer"), owner = make("business_owner"), control = make("control"), secondControl = make("control");
+  const employee = make("employee"), reviewer = make("reviewer"), owner = make("business_owner");
   const idea = db.insert(ideas).values({ authorId: employee.userId, title: "Named controls", summary: "Test", category: "Technology", reference: `ABI-CONTROL-${stamp}` }).returning({ id: ideas.id }).get();
   db.run(sql`SAVEPOINT governance_named_controls_test`);
   try {
@@ -194,28 +187,9 @@ test("SLA limits routing and named controls require separate audited approvals",
     const routedDue = db.select({ dueAt: ideas.dueAt }).from(ideas).where(eq(ideas.id, idea.id)).get()?.dueAt;
     assert.ok(routedDue && routedDue.getTime() > Date.now() + 2 * 86_400_000 && routedDue.getTime() <= Date.now() + 3 * 86_400_000);
     await decideGovernance(owner, idea.id, "approve", "Business case accepted");
-    const controlDue = db.select({ dueAt: ideas.dueAt }).from(ideas).where(eq(ideas.id, idea.id)).get()?.dueAt;
-    assert.ok(controlDue && controlDue.getTime() > Date.now() + 3 * 86_400_000);
-    assert.deepEqual((await getEvaluation(idea.id, control)).controlReview?.pending, ["Risk", "Compliance"]);
-    db.update(ideaSettings).set({ value: "[]" }).where(eq(ideaSettings.key, "required_controls")).run();
-    await assert.rejects(decideGovernance(control, idea.id, "approve", "Ambiguous control"), /Select a required control/);
-    await assert.rejects(decideGovernance(control, idea.id, "approve", "Wrong control", undefined, undefined, undefined, "Security"), /Select a required control/);
-    const key = `risk-approval-${stamp}`;
-    const first = await decideGovernance(control, idea.id, "approve", "Risk accepted", undefined, undefined, key, "risk");
-    assert.equal(first.toStatus, "control_review");
-    assert.deepEqual((await getEvaluation(idea.id, secondControl)).controlReview, { required: ["Risk", "Compliance"], approved: ["Risk"], pending: ["Compliance"] });
-    assert.equal(db.select({ dueAt: ideas.dueAt }).from(ideas).where(eq(ideas.id, idea.id)).get()?.dueAt?.getTime(), controlDue.getTime());
-    assert.deepEqual(await decideGovernance(control, idea.id, "approve", "Risk accepted", undefined, undefined, key, "risk"), first);
-    await assert.rejects(decideGovernance(control, idea.id, "approve", "Risk accepted", undefined, undefined, key, "Compliance"), /Idempotency/);
-    await assert.rejects(decideGovernance(control, idea.id, "approve", "Risk again", undefined, undefined, undefined, "Risk"), /already approved/);
-    await assert.rejects(decideGovernance(control, idea.id, "approve", "Same reviewer", undefined, undefined, undefined, "Compliance"), /different control reviewer/);
-    assert.ok(db.select().from(auditEvents).where(eq(auditEvents.targetId, String(idea.id))).all().some((row) => row.action === "admin.governance.approve" && row.metadataJson?.includes('"controlName":"Risk"')));
-    db.update(ideas).set({ status: "decision" }).where(eq(ideas.id, idea.id)).run();
-    await assert.rejects(decideGovernance(reviewer, idea.id, "confirm", "Cannot skip Compliance"), /All required controls/);
-    db.update(ideas).set({ status: "control_review" }).where(eq(ideas.id, idea.id)).run();
-    await decideGovernance(secondControl, idea.id, "approve", "Compliance accepted", undefined, undefined, undefined, "Compliance");
     assert.equal(db.select({ status: ideas.status }).from(ideas).where(eq(ideas.id, idea.id)).get()?.status, "decision");
-    await decideGovernance(reviewer, idea.id, "confirm", "All controls complete");
+    assert.ok((await listTransformationQueue()).items.some((item) => item.id === idea.id));
+    await decideGovernance(reviewer, idea.id, "confirm", "Accept for transformation");
     assert.equal(db.select({ status: ideas.status }).from(ideas).where(eq(ideas.id, idea.id)).get()?.status, "poc");
   } finally {
     db.run(sql`ROLLBACK TO governance_named_controls_test`);

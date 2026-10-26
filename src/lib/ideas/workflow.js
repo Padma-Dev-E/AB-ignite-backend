@@ -8,7 +8,7 @@ import { appendIdeaEvent, createAiRun, getAuthorizedIdeaSnapshot } from "./repos
 const transitions = {
     screening: ["returned", "business_review", "control_review", "poc"],
     returned: ["screening", "business_review"],
-    business_review: ["returned", "control_review", "decision"],
+    business_review: ["returned", "decision"],
     control_review: ["returned", "decision"],
     decision: ["poc", "rejected", "deferred"],
     poc: ["implementation", "decision", "deferred"],
@@ -27,7 +27,7 @@ export function canTransitionIdeaStatus(actor, from, to) {
     if (actor.kind === "back_office")
         return ["screening", "control_review", "decision", "poc", "implementation", "deferred"].includes(from);
     if (actor.kind === "business_owner")
-        return from === "business_review" && ["returned", "control_review", "decision"].includes(to);
+        return from === "business_review" && ["returned", "decision"].includes(to);
     return false;
 }
 export async function transitionIdeaStatus(actor, ideaId, to, reason) {

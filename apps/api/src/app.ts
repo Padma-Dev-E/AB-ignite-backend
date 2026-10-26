@@ -11,8 +11,11 @@ import { registerEmployeeRoutes } from "./routes/employee.js";
 import { registerIdeaRoutes } from "./routes/ideas.js";
 import { registerAdminGovernanceRoutes } from "./routes/admin-governance.js";
 import { registerAdminContentRoutes } from "./routes/admin-content.js";
+import { registerAdminAiPromptRoutes } from "./routes/admin-ai-prompts.js";
+import { ensureAiPromptCatalogue } from "../../../src/lib/ai/prompts/catalog.js";
 
 export async function buildApi() {
+  ensureAiPromptCatalogue();
   const trustedProxy = env.trustProxy.split(",").map((value) => value.trim()).filter(Boolean);
   const app = Fastify({
     logger: { level: env.nodeEnv === "production" ? "info" : "debug", redact: ["req.headers.cookie", "req.headers.authorization"] },
@@ -34,5 +37,6 @@ export async function buildApi() {
   await registerIdeaRoutes(app);
   await registerAdminGovernanceRoutes(app);
   await registerAdminContentRoutes(app);
+  await registerAdminAiPromptRoutes(app);
   return app;
 }
