@@ -12,6 +12,7 @@ import { registerIdeaRoutes } from "./routes/ideas.js";
 import { registerAdminGovernanceRoutes } from "./routes/admin-governance.js";
 import { registerAdminContentRoutes } from "./routes/admin-content.js";
 import { registerAdminAiPromptRoutes } from "./routes/admin-ai-prompts.js";
+import { registerAiTestRoutes } from "./routes/ai-test.js";
 import { ensureAiPromptCatalogue } from "../../../src/lib/ai/prompts/catalog.js";
 
 export async function buildApi() {
@@ -38,5 +39,6 @@ export async function buildApi() {
   await registerAdminGovernanceRoutes(app);
   await registerAdminContentRoutes(app);
   await registerAdminAiPromptRoutes(app);
+  await registerAiTestRoutes(app);
   return app;
 }
