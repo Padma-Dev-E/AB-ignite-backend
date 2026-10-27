@@ -1,29 +1,20 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { env } from "../config/env.js";
-import { postJson } from "../services/post-json.js";
-import { sendEnvelope, sendError } from "../plugins/http.js";
+import { outboundErrorDetails, sendOutboundHttpRequest } from "../services/outbound-http-request.js";
 
 const requestSchema = z.object({
-  url: z.string().url().max(2_048),
-  body: z.record(z.string(), z.unknown()),
+  url: z.string().trim().min(1).max(2_048),
+  method: z.string().trim().min(1).max(32).regex(/^[!#$%&'*+.^_`|~0-9A-Z-]+$/i),
+  headers: z.array(z.object({
+    name: z.string().max(256),
+    value: z.string().max(8_192),
+  }).strict()).max(100),
+  body: z.string().max(64_000),
 }).strict();
 
 const WINDOW_MS = 60_000;
-const MAX_REQUESTS_PER_WINDOW = 8;
-const MAX_REQUEST_BODY_BYTES = 64_000;
+const MAX_REQUESTS_PER_WINDOW = 30;
 const requestWindows = new Map<string, { startedAt: number; count: number }>();
-
-function allowedApigeeUrl(value: string | undefined) {
-  if (!value) return null;
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
 
 function rateLimited(ip: string, now = Date.now()) {
   for (const [key, window] of requestWindows) {
@@ -40,44 +31,58 @@ function rateLimited(ip: string, now = Date.now()) {
 
 export async function registerAiTestRoutes(app: FastifyInstance) {
   app.post("/api/ai-test", async (request, reply) => {
-    if (rateLimited(request.ip)) return sendError(reply, request, "rate_limited", "Please wait a minute before sending another test request.", 429);
+    const actor = await app.requireActor(request, reply);
+    if (!actor) return;
+    if (actor.role !== "back_office") {
+      return reply.code(403).send({ error: { name: "AuthorizationError", message: "A back-office account is required to send API test requests.", code: "FORBIDDEN" }, requestId: request.id });
+    }
+    if (rateLimited(`${actor.userId}:${request.ip}`)) {
+      return reply.code(429).send({ error: { name: "RateLimitError", message: "Too many test requests. Try again in a minute.", code: "RATE_LIMITED" }, requestId: request.id });
+    }
 
     const parsed = requestSchema.safeParse(request.body);
-    if (!parsed.success) return sendError(reply, request, "validation_error", "Provide a valid URL and a JSON object body.", 400);
-
-    const target = allowedApigeeUrl(env.apigeeUrl);
-    if (!target || !env.apigeeClientId) {
-      return sendError(reply, request, "apigee_not_configured", "Set APIGEE_URL and APIGEE_CLIENT_ID in the backend environment first.", 503);
-    }
-    if (parsed.data.url !== target.href && parsed.data.url !== env.apigeeUrl) {
-      return sendError(reply, request, "target_not_allowed", "The URL must exactly match the configured APIGEE_URL.", 400);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: { name: "ValidationError", message: parsed.error.message, code: "INVALID_REQUEST" }, requestId: request.id });
     }
 
-    let serializedBody: string;
+    let target: URL;
     try {
-      serializedBody = JSON.stringify(parsed.data.body);
-    } catch {
-      return sendError(reply, request, "validation_error", "The request body must be valid JSON.", 400);
+      target = new URL(parsed.data.url);
+    } catch (error) {
+      const details = outboundErrorDetails(error);
+      return reply.code(400).send({ error: details, requestId: request.id });
     }
-    if (Buffer.byteLength(serializedBody, "utf8") > MAX_REQUEST_BODY_BYTES) {
-      return sendError(reply, request, "payload_too_large", "The JSON request body must be 64 KB or smaller.", 413);
+    if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) {
+      return reply.code(400).send({
+        error: { name: "InvalidUrlError", message: "Only HTTP or HTTPS URLs without embedded credentials are supported.", code: "INVALID_URL" },
+        requestId: request.id,
+      });
     }
 
     try {
-      const upstream = await postJson(
-        target.href,
-        parsed.data.body,
-        { client_id: env.apigeeClientId },
-        { timeoutMs: 30_000, maxResponseBytes: 128_000 },
-      );
-      return sendEnvelope(reply, request, {
-        request: { method: "POST", url: target.href, headers: { "content-type": "application/json", client_id: "[configured on backend; value hidden]" }, body: parsed.data.body },
-        response: upstream,
+      const response = await sendOutboundHttpRequest({
+        url: target,
+        method: parsed.data.method.toUpperCase(),
+        headers: parsed.data.headers,
+        body: parsed.data.body,
+      });
+      return reply.code(200).header("cache-control", "no-store").send({
+        requestId: request.id,
+        request: {
+          method: parsed.data.method.toUpperCase(),
+          url: target.href,
+          headers: parsed.data.headers.filter((header) => header.name.trim()),
+          body: parsed.data.body,
+        },
+        response,
       });
     } catch (error) {
-      const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-      request.log.warn({ requestId: request.id, timedOut }, "Apigee AI test request failed");
-      return sendError(reply, request, timedOut ? "upstream_timeout" : "upstream_unavailable", timedOut ? "The Apigee request timed out after 30 seconds." : "The Apigee endpoint could not be reached.", timedOut ? 504 : 502);
+      const details = outboundErrorDetails(error);
+      const status = details.code === "DESTINATION_BLOCKED" || details.code === "INVALID_HEADER" ? 400
+        : details.code === "ETIMEDOUT" ? 504
+          : 502;
+      request.log.warn({ requestId: request.id, errorName: details.name, errorCode: details.code }, "AI test outbound request failed");
+      return reply.code(status).header("cache-control", "no-store").send({ error: details, requestId: request.id });
     }
   });
 }

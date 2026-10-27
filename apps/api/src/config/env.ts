@@ -27,6 +27,4 @@ export const env = Object.freeze({
   trustProxy: process.env.API_TRUST_PROXY ?? "127.0.0.1,::1",
   allowedOrigins: (process.env.API_ALLOWED_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),
   maxBodyBytes: positiveInteger("API_MAX_BODY_BYTES", 1_048_576),
-  apigeeUrl: process.env.APIGEE_URL?.trim() || undefined,
-  apigeeClientId: process.env.APIGEE_CLIENT_ID?.trim() || undefined,
 });
