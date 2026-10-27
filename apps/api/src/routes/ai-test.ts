@@ -9,7 +9,8 @@ const requestSchema = z.object({
     name: z.string().max(256),
     value: z.string().max(8_192),
   }).strict()).max(100),
-  body: z.string().max(64_000),
+  hasBody: z.boolean(),
+  body: z.unknown(),
 }).strict();
 
 const WINDOW_MS = 60_000;
@@ -60,19 +61,36 @@ export async function registerAiTestRoutes(app: FastifyInstance) {
     }
 
     try {
+      let serializedBody = "";
+      if (parsed.data.hasBody) {
+        const serialized = JSON.stringify(parsed.data.body);
+        if (typeof serialized !== "string") {
+          return reply.code(400).send({ error: { name: "JsonBodyError", message: "The request body must be a JSON value.", code: "INVALID_JSON_BODY" }, requestId: request.id });
+        }
+        serializedBody = serialized;
+      }
+      if (Buffer.byteLength(serializedBody, "utf8") > 64_000) {
+        return reply.code(413).send({ error: { name: "PayloadTooLargeError", message: "The JSON body must be 64 KB or smaller.", code: "BODY_TOO_LARGE" }, requestId: request.id });
+      }
+
+      const outboundHeaders = [...parsed.data.headers.filter((header) => header.name.trim())];
+      if (parsed.data.hasBody && !outboundHeaders.some((header) => header.name.trim().toLowerCase() === "content-type")) {
+        outboundHeaders.push({ name: "content-type", value: "application/json" });
+      }
       const response = await sendOutboundHttpRequest({
         url: target,
         method: parsed.data.method.toUpperCase(),
-        headers: parsed.data.headers,
-        body: parsed.data.body,
+        headers: outboundHeaders,
+        body: serializedBody,
       });
       return reply.code(200).header("cache-control", "no-store").send({
         requestId: request.id,
         request: {
           method: parsed.data.method.toUpperCase(),
           url: target.href,
-          headers: parsed.data.headers.filter((header) => header.name.trim()),
-          body: parsed.data.body,
+          headers: outboundHeaders,
+          hasBody: parsed.data.hasBody,
+          body: parsed.data.hasBody ? parsed.data.body : null,
         },
         response,
       });
