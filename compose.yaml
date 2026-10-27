@@ -6,7 +6,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["backend"]
     env_file:
       - path: ./.env
         required: true
@@ -17,7 +16,6 @@ services:
       API_PORT: 4100
     volumes:
       - sqlite_data:/app/data
-      - ./data:/dev-data:ro
     expose:
       - "4100"
     networks:

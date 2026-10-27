@@ -8,25 +8,18 @@ if [ "${#AUTH_SECRET}" -lt 32 ]; then
   exit 1
 fi
 
-case "${1:-}" in
-  backend)
-    node docker/import-dev-db.mjs
-    npm run db:migrate
-    if [ ! -f /app/data/.ab-ignite-seeded ]; then
-      if [ -z "${DEFAULT_ADMIN_PASSWORD:-}" ]; then
-        echo "DEFAULT_ADMIN_PASSWORD must be set before initial backend setup." >&2
-        exit 1
-      fi
-      npm run db:seed
-      touch /app/data/.ab-ignite-seeded
-    fi
-    exec npm run api:start
-    ;;
-  web)
-    exec ./node_modules/.bin/next start --hostname 0.0.0.0 --port 3000
-    ;;
-  *)
-    echo "Usage: entrypoint.sh {backend|web}" >&2
-    exit 2
-    ;;
-esac
+if [ "${1:-backend}" != "backend" ]; then
+  echo "This image only runs the Fastify backend." >&2
+  exit 2
+fi
+
+npm run db:migrate
+if [ ! -f /app/data/.ab-ignite-seeded ]; then
+  if [ -z "${DEFAULT_ADMIN_PASSWORD:-}" ]; then
+    echo "DEFAULT_ADMIN_PASSWORD must be set before initial backend setup." >&2
+    exit 1
+  fi
+  npm run db:seed
+  touch /app/data/.ab-ignite-seeded
+fi
+exec npm run api:start

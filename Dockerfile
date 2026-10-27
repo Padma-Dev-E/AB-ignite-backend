@@ -33,3 +33,4 @@ RUN mkdir -p /app/data && chown node:node /app/data && chmod 755 /app/docker/ent
 USER node
 EXPOSE 4100
 ENTRYPOINT ["./docker/entrypoint.sh"]
+CMD ["backend"]
