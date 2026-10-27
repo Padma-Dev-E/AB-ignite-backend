@@ -75,8 +75,23 @@ async function start() {
   }
 }
 
+function safeStartupError(error: unknown) {
+  const value = error instanceof Error ? error : new Error("Unknown startup error");
+  const candidateCode = typeof error === "object" && error !== null && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  const code = typeof candidateCode === "string" && /^[A-Z0-9_-]{1,64}$/i.test(candidateCode)
+    ? candidateCode
+    : undefined;
+  const message = value.message
+    .replace(/\b(auth[_-]?secret|internal[_-]?api[_-]?token|gemini[_-]?api[_-]?key|apigee[_-]?client[_-]?id|password|token|api[_-]?key)\b(\s*[:=]\s*)[^\s,;]+/gi, "$1$2[redacted]")
+    .replace(/(https?:\/\/)[^/\s@]+@/gi, "$1[redacted]@")
+    .slice(0, 500);
+  return { name: value.name, ...(code ? { code } : {}), message };
+}
+
 void start().catch((error) => {
-  // Avoid printing startup exceptions because config/database errors may carry sensitive values.
-  process.stderr.write("Fastify API startup failed. Check the server configuration.\n");
+  // Keep useful startup diagnostics while redacting common secret-bearing values.
+  process.stderr.write(`${JSON.stringify({ level: "error", event: "fastify_api_startup_failed", error: safeStartupError(error) })}\n`);
   process.exitCode = 1;
 });
