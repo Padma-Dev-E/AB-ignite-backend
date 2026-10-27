@@ -7,3 +7,7 @@ data/*.db-shm
 data/*.db-wal
 *.tsbuildinfo
 coverage/
+
+# Local agent workflow artifacts; not application documentation.
+.superpowers/
+docs/superpowers/
