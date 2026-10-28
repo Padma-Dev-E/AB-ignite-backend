@@ -5,7 +5,7 @@ import { articles, articleCompletions, auditEvents, feedbackCampaigns, feedbackR
 import { relatedQuizIdsForArticles } from "../quizzes/service";
 import { evaluateBadgeAwards } from "../rewards/service";
 import { appendLedgerEntry } from "../rewards/repository";
-import { createGeminiProvider } from "../ai/gemini-provider-core";
+import { createApigeeProvider } from "../ai/apigee-provider-core";
 import { getAiConfig } from "../ai/config-core";
 import { hashAuditValue, serializeAuditMetadata } from "../audit/redaction-core";
 
@@ -120,11 +120,11 @@ export async function articleInsight(ctx: RequestContext, articleId: number, rec
   const fallback = recommendation.reason.slice(0, 240);
   try {
     const config = getAiConfig();
-    if (!config.apiKey) {
+    if (!config.apigeeUrl || !config.apigeeClientId) {
       await db.insert(auditEvents).values(audit(ctx, "article.insight.generated", "article", articleId, { recommendationId, source: "rule" })).run();
       return { insight: fallback, source: "rule" as const };
     }
-    const provider = createGeminiProvider(config);
+    const provider = createApigeeProvider(config);
     const response = await provider.generateStructured({ model: config.model, systemPrompt: "Write one brief, factual sentence connecting a bank employee's learning gap to this article. Use only supplied information. Do not infer personal traits or disclose sensitive data.", userContent: JSON.stringify({ topic: recommendation.topic, scorePercent: recommendation.scorePercent, recommendationReason: recommendation.reason, articleTitle: article.title, articleSummary: article.summary }), responseMimeType: "application/json", responseJsonSchema: { type: "object", properties: { insight: { type: "string", minLength: 1, maxLength: 240 } }, required: ["insight"], additionalProperties: false }, maxOutputTokens: 120, temperature: 0, timeoutMs: config.timeoutMs });
     const parsed = z.object({ insight: z.string().trim().min(1).max(240) }).safeParse(JSON.parse(response.text));
     const source = parsed.success ? "gemini" as const : "rule" as const;

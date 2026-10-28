@@ -1,20 +1,20 @@
 import { buildApi } from "./app.js";
 import { env } from "./config/env.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { createGeminiProvider } from "../../../src/lib/ai/gemini-provider-core.js";
+import { createApigeeProvider } from "../../../src/lib/ai/apigee-provider-core.js";
 import { getAiConfig } from "../../../src/lib/ai/config-core.js";
 import { processNextAiRun } from "../../../src/lib/ai/worker.js";
 import { getWorkerPollInterval, processNextWithSqliteRetry, runWorkerLoop } from "../../../src/lib/ai/worker-loop.js";
 
 function startAiWorker(app: Awaited<ReturnType<typeof buildApi>>, signal: AbortSignal) {
   const config = getAiConfig();
-  if (!config.apiKey) {
-    app.log.warn("AI worker is not processing jobs because Gemini API credentials are not configured.");
+  if (!config.apigeeUrl || !config.apigeeClientId) {
+    app.log.warn("AI worker is not processing jobs because APIGEE_URL or APIGEE_CLIENT_ID is not configured.");
     return Promise.resolve();
   }
 
   const workerId = process.env.AI_WORKER_ID ?? `backend-worker-${process.pid}`;
-  const provider = createGeminiProvider(config);
+  const provider = createApigeeProvider(config);
   const pollIntervalMs = getWorkerPollInterval(process.env.AI_WORKER_POLL_INTERVAL_MS);
   app.log.info({ workerId, pollIntervalMs }, "AI worker started within the backend service");
 
