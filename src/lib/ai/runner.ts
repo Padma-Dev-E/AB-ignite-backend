@@ -133,8 +133,12 @@ export async function executeClaimedAiRun<TInput, TOutput>(
       resultJson: JSON.stringify(parsedOutput.data),
       usageJson: response.usage ? JSON.stringify(response.usage) : undefined,
       finishReason: response.finishReason,
+    }, {
+      actorType: "ai",
+      eventType: "ai_completed",
+      correlationId: args.correlationId,
+      metadataJson: JSON.stringify({ jobKey: job.key, runId: claimed.id }),
     });
-    await appendIdeaEvent({ ideaId: args.ideaId, actorType: "ai", eventType: "ai_completed", correlationId: args.correlationId, metadataJson: JSON.stringify({ jobKey: job.key, runId: claimed.id }) });
     return {
       runId: String(claimed.id), jobKey: job.key, jobVersion: job.version, promptVersion: claimed.promptVersion,
       model: claimed.model, data: parsedOutput.data, attempts: claimed.attemptCount, latencyMs: Date.now() - started,

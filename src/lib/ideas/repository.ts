@@ -44,24 +44,26 @@ export type CreateAiRunInput = Omit<NewAiRun, "promptVersion"> & { promptVersion
 export const AiRunEventTypeSchema = z.enum(["queued", "running", "succeeded", "failed", "retry"]);
 export type AiRunEventType = z.infer<typeof AiRunEventTypeSchema>;
 
+const safeAiRunEventErrorCodeSchema = z.enum([
+  "provider_error",
+  "provider_retry",
+  "provider_output_error",
+  "schema_validation_error",
+  "timeout",
+  "unknown",
+  "input_too_large",
+  "restricted_data",
+  "sensitive_data",
+  "prompt_injection",
+  "invalid_input",
+  "worker_provider_missing",
+  "unknown_job",
+  "idea_version_missing",
+]);
+
 const safeAiRunEventPayloadSchema = z.strictObject({
   attempt: z.number().int().min(0).max(100),
-  errorCode: z.enum([
-    "provider_error",
-    "provider_retry",
-    "provider_output_error",
-    "schema_validation_error",
-    "timeout",
-    "unknown",
-    "input_too_large",
-    "restricted_data",
-    "sensitive_data",
-    "prompt_injection",
-    "invalid_input",
-    "worker_provider_missing",
-    "unknown_job",
-    "idea_version_missing",
-  ]).optional(),
+  errorCode: safeAiRunEventErrorCodeSchema.optional(),
   retryAt: z.string().datetime().optional(),
 });
 
@@ -344,7 +346,7 @@ export async function claimAiRun(runId: number, workerId: string, now = new Date
   });
 }
 
-export async function completeAiRun(runId: number, result: AiRunResultInput): Promise<void> {
+export async function completeAiRun(runId: number, result: AiRunResultInput, completionEvent?: Omit<CreateIdeaEventInput, "ideaId">): Promise<void> {
   await db.transaction((tx) => {
     const [run] = tx.select().from(aiRuns).where(eq(aiRuns.id, runId)).limit(1).all();
     if (!run) return;
@@ -369,6 +371,7 @@ export async function completeAiRun(runId: number, result: AiRunResultInput): Pr
       resultJson: result.resultJson,
     }).run();
     appendAiRunEventRecord(tx, run, "succeeded", { attempt: run.attemptCount }, now);
+    if (completionEvent) tx.insert(ideaEvents).values({ ...completionEvent, ideaId: run.ideaId }).run();
   });
 }
 
@@ -386,7 +389,11 @@ export async function failAiRun(runId: number, failure: AiRunFailureInput): Prom
       completedAt: now,
       updatedAt: now,
     }).where(eq(aiRuns.id, runId)).run();
-    appendAiRunEventRecord(tx, run, "failed", { attempt: run.attemptCount, errorCode: failure.errorCode }, now);
+    // Keep detailed provider/job error codes on the run row, but restrict the
+    // public event payload to the safe vocabulary. Unknown codes must never
+    // abort this transaction and leave a terminal run stuck in `running`.
+    const eventErrorCode = safeAiRunEventErrorCodeSchema.safeParse(failure.errorCode);
+    appendAiRunEventRecord(tx, run, "failed", { attempt: run.attemptCount, errorCode: eventErrorCode.success ? eventErrorCode.data : "unknown" }, now);
   });
 }
 
