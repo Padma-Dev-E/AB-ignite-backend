@@ -49,6 +49,8 @@ export type StructuredGenerationRequest = {
 
 export type StructuredGenerationResponse = {
   text: string;
+  /** Ordered parsed-output alternatives; the job schema selects the usable value. */
+  candidateTexts?: string[];
   usage?: AiUsage;
   finishReason?: string;
 };

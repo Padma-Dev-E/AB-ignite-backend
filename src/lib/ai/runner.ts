@@ -105,11 +105,26 @@ export async function executeClaimedAiRun<TInput, TOutput>(
       runId: claimed.id,
       attempt: claimed.attemptCount,
     });
-    let decoded: unknown;
-    try { decoded = JSON.parse(response.text); } catch (error) { throw new AiSchemaValidationError("AI output was not valid JSON", { cause: error }); }
-    const parsedOutput = job.outputSchema.safeParse(decoded);
-    if (!parsedOutput.success) {
-      const error = outputError(parsedOutput);
+    let output: TOutput | undefined;
+    let outputValidated = false;
+    let lastSchemaError: z.ZodError | undefined;
+    let hadJsonCandidate = false;
+    for (const candidateText of response.candidateTexts?.length ? response.candidateTexts : [response.text]) {
+      let decoded: unknown;
+      try { decoded = JSON.parse(candidateText); } catch { continue; }
+      hadJsonCandidate = true;
+      const candidateOutput = job.outputSchema.safeParse(decoded);
+      if (candidateOutput.success) {
+        output = candidateOutput.data;
+        outputValidated = true;
+        break;
+      }
+      lastSchemaError = candidateOutput.error;
+    }
+    if (!outputValidated) {
+      const error = lastSchemaError
+        ? outputError({ success: false, error: lastSchemaError })
+        : new AiSchemaValidationError(hadJsonCandidate ? "AI output did not match the expected schema" : "AI output was not valid JSON");
       try {
         const config = getAiConfig();
         if (config.aiDebugPayloads) {
@@ -130,7 +145,7 @@ export async function executeClaimedAiRun<TInput, TOutput>(
       } catch { /* diagnostic recording is best effort */ }
     }
     await completeAiRun(claimed.id, {
-      resultJson: JSON.stringify(parsedOutput.data),
+      resultJson: JSON.stringify(output),
       usageJson: response.usage ? JSON.stringify(response.usage) : undefined,
       finishReason: response.finishReason,
     }, {
@@ -141,7 +156,7 @@ export async function executeClaimedAiRun<TInput, TOutput>(
     });
     return {
       runId: String(claimed.id), jobKey: job.key, jobVersion: job.version, promptVersion: claimed.promptVersion,
-      model: claimed.model, data: parsedOutput.data, attempts: claimed.attemptCount, latencyMs: Date.now() - started,
+      model: claimed.model, data: output as TOutput, attempts: claimed.attemptCount, latencyMs: Date.now() - started,
       usage: response.usage, finishReason: response.finishReason,
     };
   } catch (error) {

@@ -75,39 +75,57 @@ function balancedJsonCandidates(source: string): string[] {
   return candidates;
 }
 
-function extract(text: string, depth: number): ExtractedJsonOutput | undefined {
-  if (depth > MAX_STRING_LAYERS) return undefined;
+function uniqueResults(values: ExtractedJsonOutput[]): ExtractedJsonOutput[] {
+  const seen = new Set<string>();
+  const unique: ExtractedJsonOutput[] = [];
+  for (const value of values) {
+    if (seen.has(value.jsonText)) continue;
+    seen.add(value.jsonText);
+    unique.push(value);
+    if (unique.length >= MAX_CANDIDATES) break;
+  }
+  return unique;
+}
+
+function extractAll(text: string, depth: number): ExtractedJsonOutput[] {
+  if (depth > MAX_STRING_LAYERS) return [];
   const source = text.replace(/^\uFEFF/, "").trim();
-  if (!source) return undefined;
+  if (!source) return [];
 
   try {
     const value: unknown = JSON.parse(source);
     if (typeof value === "string") {
-      const nested = extract(value, depth + 1);
-      if (nested) return { ...nested, format: "json_string" };
+      const nested = extractAll(value, depth + 1);
+      if (nested.length > 0) return nested.map((item) => ({ ...item, format: "json_string" as const }));
     }
-    return result(value, depth === 0 ? "direct" : "json_string");
+    const parsed = result(value, depth === 0 ? "direct" : "json_string");
+    return parsed ? [parsed] : [];
   } catch { /* Try the other explicitly supported text wrappers. */ }
 
+  const results: ExtractedJsonOutput[] = [];
   const escaped = decodeEscapedJson(source);
   if (escaped !== undefined) {
-    const nested = extract(escaped, depth + 1);
-    if (nested) return { ...nested, format: "escaped_json" };
+    results.push(...extractAll(escaped, depth + 1).map((item) => ({ ...item, format: "escaped_json" as const })));
   }
 
   for (const match of source.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)) {
-    const fenced = extract(match[1] ?? "", depth + 1);
-    if (fenced) return { ...fenced, format: "markdown_fence" };
+    results.push(...extractAll(match[1] ?? "", depth + 1).map((item) => ({ ...item, format: "markdown_fence" as const })));
+    if (results.length >= MAX_CANDIDATES) return uniqueResults(results);
   }
 
   for (const candidate of balancedJsonCandidates(source)) {
-    const embedded = extract(candidate, depth + 1);
-    if (embedded) return { ...embedded, format: "embedded" };
+    results.push(...extractAll(candidate, depth + 1).map((item) => ({ ...item, format: "embedded" as const })));
+    if (results.length >= MAX_CANDIDATES) break;
   }
-  return undefined;
+  return uniqueResults(results);
 }
 
 /** Extract one syntactically valid JSON value from common model text wrappers. */
 export function extractJsonOutput(text: string): ExtractedJsonOutput | undefined {
-  return extract(text, 0);
+  return extractJsonOutputs(text)[0];
+}
+
+/** Extract complete JSON values in order so job schemas can select the match. */
+export function extractJsonOutputs(text: string): ExtractedJsonOutput[] {
+  return extractAll(text, 0);
 }

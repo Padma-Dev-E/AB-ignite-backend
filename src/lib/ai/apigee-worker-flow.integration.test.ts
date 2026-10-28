@@ -65,13 +65,11 @@ test("APIGEE response flows through extraction, schema validation, persistence, 
   };
   let nestedMarkdownText = `\`\`\`json\n${JSON.stringify(output)}\n\`\`\``;
   for (let layer = 0; layer < 8; layer += 1) nestedMarkdownText = JSON.stringify(nestedMarkdownText);
-  let apigeeResponse: unknown = [{
-    candidates: [
-      { content: { role: "model", parts: [{ text: "I will consider the request carefully." }] }, finishReason: "STOP" },
-      { content: { role: "model", parts: [{ text: nestedMarkdownText }] }, finishReason: "STOP" },
-    ],
-    usageMetadata: { promptTokenCount: 123, candidatesTokenCount: 77 },
-  }];
+  const streamFragments = [nestedMarkdownText.slice(0, 17), nestedMarkdownText.slice(17, 51), nestedMarkdownText.slice(51)];
+  let apigeeResponse: unknown = streamFragments.map((fragment, index) => ({
+    candidates: [{ index: 0, content: { role: "model", parts: [{ text: fragment }] }, ...(index === streamFragments.length - 1 ? { finishReason: "STOP" } : {}) }],
+    ...(index === streamFragments.length - 1 ? { usageMetadata: { promptTokenCount: 123, candidatesTokenCount: 77 } } : {}),
+  }));
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; init: RequestInit }> = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -128,6 +126,30 @@ test("APIGEE response flows through extraction, schema validation, persistence, 
     assert.deepEqual(db.select().from(aiRunEvents).where(eq(aiRunEvents.runId, queued.id)).all().map((event) => event.eventType), ["queued", "running", "succeeded"]);
     assert.ok(db.select().from(ideaEvents).where(eq(ideaEvents.ideaId, idea.id)).all().some((event) => event.eventType === "ai_completed"));
 
+    // If one streamed/candidate fragment contains syntactically valid but
+    // schema-incomplete JSON, the job schema should select a later valid value.
+    apigeeResponse = [{ candidates: [
+      { index: 0, content: { role: "model", parts: [{ text: JSON.stringify({ partial: true }) }] }, finishReason: "STOP" },
+      { index: 1, content: { role: "model", parts: [{ text: JSON.stringify(output) }] }, finishReason: "STOP" },
+    ] }];
+    const schemaCandidateQueued = await createAiRun({
+      ideaId: idea.id,
+      ideaVersionId: version.id,
+      jobKey: "idea.enrich",
+      jobVersion: "1",
+      promptVersion: String(promptVersion),
+      model: "gemini-test",
+      idempotencyKey: "apigee-worker-flow-schema-candidate",
+      correlationId: "apigee-worker-flow-schema-candidate",
+      requestedBy: author.id,
+      inputHash: "apigee-worker-flow-schema-candidate",
+      inputJson: JSON.stringify({ kind: "idea", title: idea.title, summary: idea.summary, problem: idea.problem, solution: idea.solution, benefits: idea.benefits, risks: idea.risks, category: idea.category, dataClassification: "internal", evidence: [], relatedIdeas: [] }),
+    });
+    const schemaCandidateOutcome = await processNextAiRun("apigee-flow-test-worker", { provider: createApigeeProvider((await import("./config-core")).getAiConfig()) });
+    assert.deepEqual(schemaCandidateOutcome, { status: "succeeded", runId: schemaCandidateQueued.id });
+    const [schemaCandidateRun] = db.select().from(aiRuns).where(eq(aiRuns.id, schemaCandidateQueued.id)).all();
+    assert.deepEqual(JSON.parse(schemaCandidateRun.resultJson ?? "null"), output);
+
     // Malformed model output is terminal: the worker records failure instead
     // of re-queuing the run and repeatedly calling APIGEE.
     apigeeResponse = [{ candidates: [{ content: { role: "model", parts: [{ text: "The model returned no structured answer." }] }, finishReason: "STOP" }] }];
@@ -158,7 +180,7 @@ test("APIGEE response flows through extraction, schema validation, persistence, 
     });
     const failedOutcome = await processNextAiRun("apigee-flow-test-worker", { provider: createApigeeProvider((await import("./config-core")).getAiConfig()) });
     assert.deepEqual(failedOutcome, { status: "failed", runId: failedQueued.id });
-    assert.equal(requests.length, 2, "invalid model output must make one provider call, not loop");
+    assert.equal(requests.length, 3, "invalid model output must make one provider call, not loop");
     const [failedRun] = db.select().from(aiRuns).where(eq(aiRuns.id, failedQueued.id)).all();
     assert.equal(failedRun.status, "failed");
     assert.equal(failedRun.errorCode, "model_output_not_json");

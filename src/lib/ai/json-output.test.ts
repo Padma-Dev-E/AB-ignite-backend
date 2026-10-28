@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractJsonOutput, unwrapJsonStringLayers } from "./json-output";
+import { extractJsonOutput, extractJsonOutputs, unwrapJsonStringLayers } from "./json-output";
 
 const expected = { suggestedTitle: "Structured Readiness Checklist", note: "Braces stay inside {quoted text}." };
 
@@ -34,6 +34,14 @@ test("extracts JSON nested through many serialized string and Markdown layers", 
 
   const extracted = extractJsonOutput(nested);
   assert.deepEqual(extracted?.value, expected);
+});
+
+test("returns all complete JSON values in streamed text so the job schema can select the valid one", () => {
+  const firstFragment = { partial: true };
+  const expected = { suggestedTitle: "Structured Readiness Checklist", note: "Valid final object." };
+  const outputs = extractJsonOutputs(`${JSON.stringify(firstFragment)}${JSON.stringify(expected)}`);
+
+  assert.deepEqual(outputs.map((output) => output.value), [firstFragment, expected]);
 });
 
 test("extracts JSON whose structural quotes are escaped without outer string quotes", () => {

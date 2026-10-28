@@ -1,7 +1,7 @@
 import { callApigeeAi } from "./apigee-client";
 import type { AiConfig } from "./config-core";
 import { AiProviderError, AiProviderOutputError, AiTimeoutError } from "./errors";
-import { extractJsonOutput, unwrapJsonStringLayers } from "./json-output";
+import { extractJsonOutputs, unwrapJsonStringLayers } from "./json-output";
 import type { AiProvider } from "./provider";
 import type { JsonSchema, StructuredGenerationRequest, StructuredGenerationResponse } from "./types";
 
@@ -9,6 +9,7 @@ type ApigeeCall = <T = unknown>(config: AiConfig, body: unknown, diagnostic?: { 
 
 type ApigeePart = { text?: unknown };
 type ApigeeCandidate = {
+  index?: unknown;
   content?: { parts?: ApigeePart[] };
   finishReason?: string;
 };
@@ -19,12 +20,15 @@ type ApigeeEnvelope = {
 };
 
 type CandidateText = {
+  index: number;
   text: string;
   finishReason?: string;
   usageMetadata?: ApigeeEnvelope["usageMetadata"];
 };
 
-const MAX_RESPONSE_NODES = 128;
+// The HTTP client already enforces a 264 KB response limit. This node bound
+// leaves ample room for streamed chunks while bounding malformed wrapper work.
+const MAX_RESPONSE_NODES = 16_384;
 const RESPONSE_WRAPPER_KEYS = ["data", "response", "result", "body", "output", "payload"] as const;
 
 export type ApigeeProviderDependencies = {
@@ -71,7 +75,7 @@ function safeReason(value: string) {
 }
 
 function extractTexts(value: unknown): CandidateText[] {
-  const texts: CandidateText[] = [];
+  const grouped = new Map<number, CandidateText>();
   for (const envelope of responseEnvelopes(value)) {
     if (envelope.promptFeedback?.blockReason) throw new AiProviderOutputError(`APIGEE prompt was blocked (${safeReason(envelope.promptFeedback.blockReason)})`, { code: "provider_prompt_blocked", stage: "candidate_extraction" });
     if (!Array.isArray(envelope.candidates)) continue;
@@ -80,11 +84,19 @@ function extractTexts(value: unknown): CandidateText[] {
       const candidate = valueCandidate as ApigeeCandidate;
       const parts = candidate.content?.parts;
       if (!Array.isArray(parts)) continue;
-      const text = parts.map((part) => part && typeof part.text === "string" ? part.text : "").join("").trim();
-      if (text) texts.push({ text, finishReason: candidate.finishReason, usageMetadata: envelope.usageMetadata });
+      const fragment = parts.map((part) => part && typeof part.text === "string" ? part.text : "").join("");
+      if (!fragment.trim()) continue;
+      const index = typeof candidate.index === "number" && Number.isInteger(candidate.index) && candidate.index >= 0 ? candidate.index : 0;
+      const existing = grouped.get(index);
+      grouped.set(index, {
+        index,
+        text: `${existing?.text ?? ""}${fragment}`,
+        finishReason: candidate.finishReason ?? existing?.finishReason,
+        usageMetadata: envelope.usageMetadata ?? existing?.usageMetadata,
+      });
     }
   }
-  return texts;
+  return [...grouped.values()].map((candidate) => ({ ...candidate, text: candidate.text.trim() }));
 }
 
 function incompleteCandidateError(finishReason: string) {
@@ -136,8 +148,9 @@ export function createApigeeProvider(config: AiConfig, dependencies: ApigeeProvi
         if (error instanceof AiTimeoutError || error instanceof AiProviderError || error instanceof AiProviderOutputError) throw error;
         throw new AiProviderError("transient", "APIGEE request failed");
       }
-      let extracted: CandidateText | undefined;
-      let extractedJson: ReturnType<typeof extractJsonOutput>;
+      let selectedCandidate: CandidateText | undefined;
+      const extractedJsonTexts: string[] = [];
+      const seenJsonTexts = new Set<string>();
       let oversized = false;
       let incompleteReason: string | undefined;
       for (const candidate of candidates) {
@@ -150,32 +163,34 @@ export function createApigeeProvider(config: AiConfig, dependencies: ApigeeProvi
           continue;
         }
         const normalizedText = candidate.text.replace(/^\uFEFF/, "").trim();
-        const parsed = extractJsonOutput(normalizedText);
-        if (parsed) {
-          extracted = candidate;
-          extractedJson = parsed;
-          break;
+        const parsedValues = extractJsonOutputs(normalizedText);
+        if (parsedValues.length > 0 && !selectedCandidate) selectedCandidate = candidate;
+        for (const parsed of parsedValues) {
+          if (seenJsonTexts.has(parsed.jsonText)) continue;
+          seenJsonTexts.add(parsed.jsonText);
+          extractedJsonTexts.push(parsed.jsonText);
         }
       }
-      if (!extracted && oversized && candidates.every((candidate) => !candidateWasComplete(candidate) || !candidateSizeIsAllowed(candidate, config.maxOutputBytes))) {
+      if (extractedJsonTexts.length === 0 && oversized && candidates.every((candidate) => !candidateWasComplete(candidate) || !candidateSizeIsAllowed(candidate, config.maxOutputBytes))) {
         try { await updateDebugStage(config, request, attempt, { processingStage: "output_size_limit", errorCode: "structured_output_too_large", errorMessage: "APIGEE structured output exceeded the configured size limit" }); } catch { /* best effort */ }
         throw new AiProviderOutputError("APIGEE structured output exceeded the configured size limit", { code: "structured_output_too_large", stage: "output_size_limit" });
       }
-      if (!extractedJson) {
+      if (extractedJsonTexts.length === 0) {
         if (incompleteReason && candidates.every((candidate) => !candidateWasComplete(candidate))) throw incompleteCandidateError(incompleteReason);
-        try { await updateDebugStage(config, request, attempt, { processingStage: "model_json_parsing", errorCode: "model_output_not_json", errorMessage: "APIGEE returned malformed JSON" }); } catch { /* best effort */ }
-        throw new AiProviderOutputError("APIGEE returned malformed JSON", { code: "model_output_not_json", stage: "model_json_parsing" });
+        const errorMessage = "No complete JSON value was found after combining APIGEE stream chunks";
+        try { await updateDebugStage(config, request, attempt, { processingStage: "model_json_parsing", errorCode: "model_output_not_json", errorMessage }); } catch { /* best effort */ }
+        throw new AiProviderOutputError(errorMessage, { code: "model_output_not_json", stage: "model_json_parsing" });
       }
-      const text = extractedJson.jsonText;
       try { await updateDebugStage(config, request, attempt, { processingStage: "schema_validation" }); } catch { /* best effort */ }
 
       return {
-        text,
-        usage: extracted?.usageMetadata ? {
-          inputTokens: extracted.usageMetadata.promptTokenCount,
-          outputTokens: extracted.usageMetadata.candidatesTokenCount,
+        text: extractedJsonTexts[0] as string,
+        candidateTexts: extractedJsonTexts,
+        usage: selectedCandidate?.usageMetadata ? {
+          inputTokens: selectedCandidate.usageMetadata.promptTokenCount,
+          outputTokens: selectedCandidate.usageMetadata.candidatesTokenCount,
         } : undefined,
-        finishReason: extracted?.finishReason,
+        finishReason: selectedCandidate?.finishReason,
       } satisfies StructuredGenerationResponse;
     },
   };

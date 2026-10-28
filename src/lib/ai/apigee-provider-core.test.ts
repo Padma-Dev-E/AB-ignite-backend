@@ -138,3 +138,29 @@ test("finds APIGEE candidates inside nested response wrapper objects", async () 
   const result = await provider.generateStructured(request);
   assert.deepEqual(JSON.parse(result.text), expected);
 });
+
+test("joins ordered APIGEE streaming chunks before extracting JSON", async () => {
+  const expected = { suggestedTitle: "Reduce payment investigation time", score: 8 };
+  const text = JSON.stringify(expected);
+  const fragments = [text.slice(0, 9), text.slice(9, 23), text.slice(23)];
+  const provider = createApigeeProvider(config, {
+    call: async () => fragments.map((fragment, index) => ({
+      candidates: [{ index: 0, content: { role: "model", parts: [{ text: fragment }] }, ...(index === fragments.length - 1 ? { finishReason: "STOP" } : {}) }],
+    })),
+  });
+
+  const result = await provider.generateStructured(request);
+  assert.deepEqual(JSON.parse(result.text), expected);
+});
+
+test("does not truncate a streamed candidate split across more than 128 chunks", async () => {
+  const expected = { text: "x".repeat(400) };
+  const provider = createApigeeProvider(config, {
+    call: async () => [...JSON.stringify(expected)].map((character) => ({
+      candidates: [{ index: 0, content: { parts: [{ text: character }] } }],
+    })),
+  });
+
+  const result = await provider.generateStructured(request);
+  assert.deepEqual(JSON.parse(result.text), expected);
+});
