@@ -63,10 +63,17 @@ test("APIGEE response flows through extraction, schema validation, persistence, 
     affectedTeams: ["Operations"],
     assumptions: [],
   };
-  let nestedMarkdownText = `\`\`\`json\n${JSON.stringify(output)}\n\`\`\``;
-  for (let layer = 0; layer < 8; layer += 1) nestedMarkdownText = JSON.stringify(nestedMarkdownText);
-  const streamFragments = [nestedMarkdownText.slice(0, 17), nestedMarkdownText.slice(17, 51), nestedMarkdownText.slice(51)];
+  const markdownStreamText = `\`\`\`json\n${JSON.stringify(output)}\n\`\`\``;
+  const tagArrayText = JSON.stringify(output.tags);
+  const tagArrayStart = markdownStreamText.indexOf(tagArrayText);
+  assert.notEqual(tagArrayStart, -1);
+  const streamFragments = [
+    markdownStreamText.slice(0, tagArrayStart),
+    tagArrayText,
+    markdownStreamText.slice(tagArrayStart + tagArrayText.length),
+  ];
   let apigeeResponse: unknown = streamFragments.map((fragment, index) => ({
+    responseId: "same-stream-response-id",
     candidates: [{ index: 0, content: { role: "model", parts: [{ text: fragment }] }, ...(index === streamFragments.length - 1 ? { finishReason: "STOP" } : {}) }],
     ...(index === streamFragments.length - 1 ? { usageMetadata: { promptTokenCount: 123, candidatesTokenCount: 77 } } : {}),
   }));

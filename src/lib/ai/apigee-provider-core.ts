@@ -15,6 +15,7 @@ type ApigeeCandidate = {
 };
 type ApigeeEnvelope = {
   candidates?: unknown;
+  responseId?: unknown;
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   promptFeedback?: { blockReason?: string };
 };
@@ -75,7 +76,7 @@ function safeReason(value: string) {
 }
 
 function extractTexts(value: unknown): CandidateText[] {
-  const grouped = new Map<number, CandidateText>();
+  const grouped = new Map<string, CandidateText>();
   for (const envelope of responseEnvelopes(value)) {
     if (envelope.promptFeedback?.blockReason) throw new AiProviderOutputError(`APIGEE prompt was blocked (${safeReason(envelope.promptFeedback.blockReason)})`, { code: "provider_prompt_blocked", stage: "candidate_extraction" });
     if (!Array.isArray(envelope.candidates)) continue;
@@ -87,8 +88,10 @@ function extractTexts(value: unknown): CandidateText[] {
       const fragment = parts.map((part) => part && typeof part.text === "string" ? part.text : "").join("");
       if (!fragment.trim()) continue;
       const index = typeof candidate.index === "number" && Number.isInteger(candidate.index) && candidate.index >= 0 ? candidate.index : 0;
-      const existing = grouped.get(index);
-      grouped.set(index, {
+      const responseId = typeof envelope.responseId === "string" && envelope.responseId.length > 0 ? envelope.responseId : "default-response";
+      const groupKey = `${responseId}\u0000${index}`;
+      const existing = grouped.get(groupKey);
+      grouped.set(groupKey, {
         index,
         text: `${existing?.text ?? ""}${fragment}`,
         finishReason: candidate.finishReason ?? existing?.finishReason,
