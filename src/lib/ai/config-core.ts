@@ -4,6 +4,7 @@ export type AiConfig = {
   apiKey?: string;
   model: string;
   baseUrl?: string;
+  skipSslAiCalls: boolean;
   timeoutMs: number;
   maxAttempts: number;
   retryInitialDelayMs: number;
@@ -72,6 +73,7 @@ export function getAiConfig(): AiConfig {
     apiKey: process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY,
     model: process.env.GEMINI_MODEL?.trim() || DEFAULTS.model,
     baseUrl: process.env.GEMINI_API_BASE_URL?.trim() || undefined,
+    skipSslAiCalls: booleanValue("SKIP_SSL_AI_CALLS", false),
     timeoutMs: numberValue("GEMINI_TIMEOUT_MS", DEFAULTS.timeoutMs, { min: 1_000 }),
     maxAttempts: numberValue("GEMINI_MAX_ATTEMPTS", DEFAULTS.maxAttempts, { min: 1, max: 10 }),
     retryInitialDelayMs: numberValue("GEMINI_RETRY_INITIAL_DELAY_MS", DEFAULTS.retryInitialDelayMs, { min: 0 }),

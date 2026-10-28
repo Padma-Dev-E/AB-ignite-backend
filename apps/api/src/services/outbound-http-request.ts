@@ -76,6 +76,7 @@ export async function sendOutboundHttpRequest(input: {
   method: string;
   headers: OutboundHeader[];
   body: string;
+  skipSslVerification?: boolean;
 }): Promise<OutboundHttpResult> {
   const requestHeaders = new Headers();
   for (const header of input.headers) {
@@ -115,6 +116,7 @@ export async function sendOutboundHttpRequest(input: {
       headers,
       lookup: pinnedLookup,
       agent: false,
+      ...(input.url.protocol === "https:" ? { rejectUnauthorized: !input.skipSslVerification } : {}),
     };
 
     const responsePromise = new Promise<OutboundHttpResult>((resolve, reject) => {

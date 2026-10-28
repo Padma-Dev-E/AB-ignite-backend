@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import { env } from "../config/env.js";
 import { outboundErrorDetails, sendOutboundHttpRequest } from "../services/outbound-http-request.js";
 
 const requestSchema = z.object({
@@ -82,6 +83,7 @@ export async function registerAiTestRoutes(app: FastifyInstance) {
         method: parsed.data.method.toUpperCase(),
         headers: outboundHeaders,
         body: serializedBody,
+        skipSslVerification: env.skipSslAiCalls,
       });
       return reply.code(200).header("cache-control", "no-store").send({
         requestId: request.id,

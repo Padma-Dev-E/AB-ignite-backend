@@ -7,6 +7,14 @@ function positiveInteger(name: string, fallback: number): number {
   return value;
 }
 
+function booleanValue(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${name} must be either true or false.`);
+}
+
 const rawSecret = process.env.AUTH_SECRET ?? "";
 if (rawSecret.length < 32) throw new Error("AUTH_SECRET must contain at least 32 characters.");
 const internalApiToken = process.env.INTERNAL_API_TOKEN ?? "";
@@ -27,4 +35,5 @@ export const env = Object.freeze({
   trustProxy: process.env.API_TRUST_PROXY ?? "127.0.0.1,::1",
   allowedOrigins: (process.env.API_ALLOWED_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),
   maxBodyBytes: positiveInteger("API_MAX_BODY_BYTES", 1_048_576),
+  skipSslAiCalls: booleanValue("SKIP_SSL_AI_CALLS", false),
 });

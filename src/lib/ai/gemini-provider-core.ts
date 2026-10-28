@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { Agent } from "undici";
 import type { AiConfig } from "./config";
 import { AiProviderError, AiProviderOutputError, AiTimeoutError } from "./errors";
 import type { AiProvider } from "./provider";
@@ -33,6 +34,16 @@ export type GeminiProviderDependencies = {
   clientFactory?: (config: AiConfig) => GeminiClientLike;
 };
 
+const insecureAiTlsDispatcher = new Agent({ connect: { rejectUnauthorized: false } });
+
+function aiFetch(skipSslVerification: boolean) {
+  if (!skipSslVerification) return globalThis.fetch.bind(globalThis);
+  return (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, {
+    ...init,
+    dispatcher: insecureAiTlsDispatcher,
+  } as RequestInit & { dispatcher: Agent });
+}
+
 function defaultClientFactory(config: AiConfig): GeminiClientLike {
   if (!config.apiKey) throw new AiProviderError("auth", "Gemini API key is not configured");
 
@@ -41,6 +52,7 @@ function defaultClientFactory(config: AiConfig): GeminiClientLike {
     httpOptions: {
       ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
       timeout: config.timeoutMs,
+      fetch: aiFetch(config.skipSslAiCalls),
       retryOptions: { attempts: 1, initialDelay: 0, maxDelay: 0, jitter: 0 },
     },
   }) as unknown as GeminiClientLike;
