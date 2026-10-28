@@ -4,8 +4,11 @@ export type ExtractedJsonOutput = {
   format: "direct" | "json_string" | "escaped_json" | "markdown_fence" | "embedded";
 };
 
-const MAX_STRING_LAYERS = 4;
-const MAX_CANDIDATES = 64;
+// These are safety bounds, not the expected response depth. Keep enough room
+// for several API wrappers, JSON-encoded strings, and Markdown wrappers while
+// preventing adversarial output from consuming unbounded CPU or stack.
+const MAX_STRING_LAYERS = 32;
+const MAX_CANDIDATES = 512;
 
 export function unwrapJsonStringLayers(value: unknown): unknown {
   let current = value;

@@ -28,6 +28,14 @@ test("unwraps JSON encoded as a JSON string", () => {
   assert.equal(extracted?.format, "json_string");
 });
 
+test("extracts JSON nested through many serialized string and Markdown layers", () => {
+  let nested = `\`\`\`json\n${JSON.stringify(expected)}\n\`\`\``;
+  for (let layer = 0; layer < 12; layer += 1) nested = JSON.stringify(nested);
+
+  const extracted = extractJsonOutput(nested);
+  assert.deepEqual(extracted?.value, expected);
+});
+
 test("extracts JSON whose structural quotes are escaped without outer string quotes", () => {
   const escaped = String.raw`{\"suggestedTitle\":\"Structured Readiness Checklist\",\"note\":\"Braces stay inside {quoted text}.\"}`;
   const extracted = extractJsonOutput(escaped);

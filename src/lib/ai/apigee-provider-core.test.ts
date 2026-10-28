@@ -3,6 +3,7 @@ import test from "node:test";
 import type { AiConfig } from "./config-core";
 import { AiProviderError, AiProviderOutputError } from "./errors";
 import { createApigeeProvider } from "./apigee-provider-core";
+import { createApigeeProvider as createRuntimeApigeeProvider } from "./apigee-provider-core.js";
 import type { StructuredGenerationRequest } from "./types";
 
 const config = {
@@ -11,6 +12,7 @@ const config = {
   maxAttempts: 3,
   retryInitialDelayMs: 0,
   retryMaxDelayMs: 0,
+  maxOutputBytes: 128_000,
 } as AiConfig;
 
 const request: StructuredGenerationRequest = {
@@ -101,4 +103,38 @@ test("does not make another provider call when output has no recoverable JSON va
   await assert.rejects(provider.generateStructured(request), (error: unknown) =>
     error instanceof AiProviderOutputError && error.code === "model_output_not_json");
   assert.equal(calls, 1);
+});
+
+test("production runtime provider extracts nested markdown JSON from candidate text", async () => {
+  const expected = { suggestedTitle: "Reduce payment investigation time", score: 8 };
+  const markdownText = "The structured result is nested below:\n\n> ```json\n> " + JSON.stringify(expected) + "\n> ```";
+  const provider = createRuntimeApigeeProvider(config, {
+    call: async () => [{ candidates: [{ content: { role: "model", parts: [{ text: markdownText }] }, finishReason: "STOP" }] }],
+  });
+
+  const result = await provider.generateStructured(request);
+  assert.deepEqual(JSON.parse(result.text), expected);
+});
+
+test("tries later APIGEE candidates when an earlier candidate has no JSON", async () => {
+  const expected = { suggestedTitle: "Reduce payment investigation time", score: 8 };
+  const provider = createApigeeProvider(config, {
+    call: async () => [{ candidates: [
+      { content: { role: "model", parts: [{ text: "I will reason through this first." }] }, finishReason: "STOP" },
+      { content: { role: "model", parts: [{ text: `\`\`\`json\n${JSON.stringify(expected)}\n\`\`\`` }] }, finishReason: "STOP" },
+    ] }],
+  });
+
+  const result = await provider.generateStructured(request);
+  assert.deepEqual(JSON.parse(result.text), expected);
+});
+
+test("finds APIGEE candidates inside nested response wrapper objects", async () => {
+  const expected = { suggestedTitle: "Reduce payment investigation time", score: 8 };
+  const provider = createApigeeProvider(config, {
+    call: async () => ({ data: { response: [{ candidates: [{ content: { parts: [{ text: JSON.stringify(expected) }] }, finishReason: "STOP" }] }] } }),
+  });
+
+  const result = await provider.generateStructured(request);
+  assert.deepEqual(JSON.parse(result.text), expected);
 });

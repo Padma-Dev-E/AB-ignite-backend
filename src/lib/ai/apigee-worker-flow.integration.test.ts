@@ -63,9 +63,13 @@ test("APIGEE response flows through extraction, schema validation, persistence, 
     affectedTeams: ["Operations"],
     assumptions: [],
   };
-  const escapedModelText = JSON.stringify(output).replace(/"/g, "\\\"");
+  let nestedMarkdownText = `\`\`\`json\n${JSON.stringify(output)}\n\`\`\``;
+  for (let layer = 0; layer < 8; layer += 1) nestedMarkdownText = JSON.stringify(nestedMarkdownText);
   let apigeeResponse: unknown = [{
-    candidates: [{ content: { role: "model", parts: [{ text: escapedModelText }] }, finishReason: "STOP" }],
+    candidates: [
+      { content: { role: "model", parts: [{ text: "I will consider the request carefully." }] }, finishReason: "STOP" },
+      { content: { role: "model", parts: [{ text: nestedMarkdownText }] }, finishReason: "STOP" },
+    ],
     usageMetadata: { promptTokenCount: 123, candidatesTokenCount: 77 },
   }];
   const originalFetch = globalThis.fetch;
