@@ -55,9 +55,58 @@ function extractText(value: unknown) {
   throw new AiProviderOutputError("APIGEE response did not contain candidate text", { code: "candidate_text_missing", stage: "candidate_extraction" });
 }
 
-function removeJsonFence(text: string) {
-  const match = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return match ? match[1].trim() : text.trim();
+function parseJsonCandidate(text: string, depth = 0): unknown | undefined {
+  if (depth > 3) return undefined;
+  const source = text.replace(/^\uFEFF/, "").trim();
+  if (!source) return undefined;
+
+  try {
+    const parsed: unknown = JSON.parse(source);
+    if (typeof parsed === "string") {
+      const nested = parseJsonCandidate(parsed, depth + 1);
+      return nested === undefined ? parsed : nested;
+    }
+    return parsed;
+  } catch { /* The model may wrap JSON in prose or a Markdown fence. */ }
+
+  const fencedBlocks = source.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
+  for (const block of fencedBlocks) {
+    const parsed = parseJsonCandidate(block[1] ?? "", depth + 1);
+    if (parsed !== undefined) return parsed;
+  }
+
+  // Find complete object/array values within surrounding text. Track quotes
+  // and escapes so braces in JSON string values do not terminate the value.
+  let candidatesChecked = 0;
+  for (let start = 0; start < source.length && candidatesChecked < 64; start += 1) {
+    const first = source[start];
+    if (first !== "{" && first !== "[") continue;
+    candidatesChecked += 1;
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+    for (let end = start; end < source.length; end += 1) {
+      const char = source[end];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') { inString = true; continue; }
+      if (char === "{" || char === "[") stack.push(char);
+      else if (char === "}" || char === "]") {
+        const opening = stack.pop();
+        if ((char === "}" && opening !== "{") || (char === "]" && opening !== "[")) break;
+        if (stack.length === 0) {
+          const parsed = parseJsonCandidate(source.slice(start, end + 1), depth + 1);
+          if (parsed !== undefined) return parsed;
+          break;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 async function updateDebugStage(config: AiConfig, request: StructuredGenerationRequest, attempt: number, update: { processingStage: string; errorCode?: string | null; errorMessage?: string | null }) {
@@ -92,14 +141,18 @@ export function createApigeeProvider(config: AiConfig, dependencies: ApigeeProvi
         if (error instanceof AiTimeoutError || error instanceof AiProviderError || error instanceof AiProviderOutputError) throw error;
         throw new AiProviderError("transient", "APIGEE request failed");
       }
-      const text = removeJsonFence(extracted.text);
-      if (Buffer.byteLength(text, "utf8") > config.maxOutputBytes) {
+      const rawText = extracted.text.replace(/^\uFEFF/, "").trim();
+      if (Buffer.byteLength(rawText, "utf8") > config.maxOutputBytes) {
         try { await updateDebugStage(config, request, attempt, { processingStage: "output_size_limit", errorCode: "structured_output_too_large", errorMessage: "APIGEE structured output exceeded the configured size limit" }); } catch { /* best effort */ }
         throw new AiProviderOutputError("APIGEE structured output exceeded the configured size limit", { code: "structured_output_too_large", stage: "output_size_limit" });
       }
-      try {
-        JSON.parse(text);
-      } catch {
+      const parsed = parseJsonCandidate(rawText);
+      if (parsed === undefined) {
+        try { await updateDebugStage(config, request, attempt, { processingStage: "model_json_parsing", errorCode: "model_output_not_json", errorMessage: "APIGEE returned malformed JSON" }); } catch { /* best effort */ }
+        throw new AiProviderOutputError("APIGEE returned malformed JSON", { code: "model_output_not_json", stage: "model_json_parsing" });
+      }
+      const text = JSON.stringify(parsed);
+      if (typeof text !== "string") {
         try { await updateDebugStage(config, request, attempt, { processingStage: "model_json_parsing", errorCode: "model_output_not_json", errorMessage: "APIGEE returned malformed JSON" }); } catch { /* best effort */ }
         throw new AiProviderOutputError("APIGEE returned malformed JSON", { code: "model_output_not_json", stage: "model_json_parsing" });
       }
