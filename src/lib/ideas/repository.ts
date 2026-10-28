@@ -270,6 +270,9 @@ export async function claimNextAiRun(workerId: string, now = new Date()): Promis
       status: "running",
       workerId,
       attemptCount: candidate.attemptCount + 1,
+      errorCode: null,
+      errorMessage: null,
+      completedAt: null,
       startedAt: now,
       updatedAt: now,
     }).where(and(eq(aiRuns.id, candidate.id), eq(aiRuns.status, "queued"))).returning().all();
@@ -329,6 +332,9 @@ export async function claimAiRun(runId: number, workerId: string, now = new Date
       status: "running",
       workerId,
       attemptCount: current.attemptCount + 1,
+      errorCode: null,
+      errorMessage: null,
+      completedAt: null,
       startedAt: now,
       updatedAt: now,
     }).where(and(eq(aiRuns.id, runId), eq(aiRuns.status, "queued"))).returning().all();
@@ -393,6 +399,9 @@ export async function requeueAiRun(runId: number, failure: AiRunFailureInput, av
     if (run.status !== "running" && run.status !== "failed" && run.status !== "timed_out") return;
     tx.update(aiRuns).set({
       status: "queued",
+      workerId: null,
+      startedAt: null,
+      completedAt: null,
       errorCode: failure.errorCode,
       errorMessage: failure.errorMessage,
       availableAt,

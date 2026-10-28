@@ -103,6 +103,7 @@ export async function executeClaimedAiRun<TInput, TOutput>(
       temperature: dependencies.temperature ?? 0,
       timeoutMs: dependencies.timeoutMs ?? 30_000,
       runId: claimed.id,
+      attempt: claimed.attemptCount,
     });
     let decoded: unknown;
     try { decoded = JSON.parse(response.text); } catch (error) { throw new AiSchemaValidationError("AI output was not valid JSON", { cause: error }); }

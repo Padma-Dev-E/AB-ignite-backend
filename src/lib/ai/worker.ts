@@ -1,10 +1,12 @@
 import { AiProviderError } from "./errors";
+import { getAiConfig } from "./config-core";
 import { getAiJob } from "./registry";
 import "./jobs";
 import { executeClaimedAiRun } from "./runner";
 import { evaluateAiInput } from "./policy";
 import { IdeaAnalysisInputSchema } from "../ideas/schemas";
 import { appendIdeaEvent, claimNextAiRun, failAiRun, getAuthorizedIdeaSnapshot, recoverStaleAiRuns, requeueAiRun, withAiRunLease } from "../ideas/repository";
+import { getWorkerStaleAfterMs } from "./worker-loop";
 import type { AiProvider } from "./provider";
 
 export type WorkerDependencies = {
@@ -38,9 +40,9 @@ function inputFromVersion(version: { kind: "idea" | "problem"; title: string; su
 }
 
 export async function processNextAiRun(workerId: string, dependencies: WorkerDependencies = {}): Promise<WorkerOutcome> {
-  const maxAttempts = dependencies.maxAttempts ?? 3;
-  const configuredStaleAfter = Number(process.env.AI_WORKER_STALE_AFTER_MS);
-  const staleAfterMs = dependencies.staleAfterMs ?? (Number.isSafeInteger(configuredStaleAfter) && configuredStaleAfter >= 30_000 ? configuredStaleAfter : 120_000);
+  const config = getAiConfig();
+  const maxAttempts = dependencies.maxAttempts ?? config.maxAttempts;
+  const staleAfterMs = dependencies.staleAfterMs ?? getWorkerStaleAfterMs(process.env.AI_WORKER_STALE_AFTER_MS, config.timeoutMs);
   await recoverStaleAiRuns(new Date(), staleAfterMs, maxAttempts, Array.from(activeRunIds));
   const claimed = await claimNextAiRun(workerId, new Date());
   if (!claimed) return { status: "idle" };

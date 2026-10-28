@@ -43,6 +43,8 @@ export type StructuredGenerationRequest = {
   temperature: number;
   timeoutMs: number;
   runId?: number;
+  /** Durable ai_runs attempt number, shared with persisted diagnostics. */
+  attempt?: number;
 };
 
 export type StructuredGenerationResponse = {

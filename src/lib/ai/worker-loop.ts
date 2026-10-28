@@ -6,6 +6,16 @@ export function getWorkerPollInterval(value?: string): number {
   return Number.isFinite(parsed) ? Math.min(60_000, Math.max(100, Math.round(parsed))) : 1_000;
 }
 
+/** Keep an active provider call from being mistaken for a dead worker lease. */
+export function getWorkerStaleAfterMs(value: string | undefined, providerTimeoutMs: number): number {
+  const parsed = value?.trim() ? Number(value) : NaN;
+  const configured = Number.isSafeInteger(parsed) && parsed >= 30_000 && parsed <= 86_400_000 ? parsed : 120_000;
+  const timeout = Number.isSafeInteger(providerTimeoutMs) && providerTimeoutMs >= 1_000
+    ? Math.min(providerTimeoutMs, 86_340_000)
+    : 30_000;
+  return Math.max(configured, timeout + 60_000);
+}
+
 type Outcome = { status: string };
 
 /** SQLite can briefly reject a write while another process owns its lock. */
