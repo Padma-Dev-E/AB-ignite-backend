@@ -1,10 +1,9 @@
-// Fastify imports the registry through a .js specifier that tsx resolves to
-// registry.ts. Point registration at that same module instance.
-import { registerAiJob } from "../registry.ts";
+import { registerAiJob } from "../registry";
 import { ideaDecisionPackJob } from "./idea-decision-pack";
 import { ideaEnrichJob } from "./idea-enrich";
 import { ideaEstimateJob } from "./idea-estimate";
 import { ideaImpactPlanJob } from "./idea-impact-plan";
+import { ideaOwnerMatchJob } from "./idea-owner-match";
 import { ideaPreflightJob } from "./idea-preflight";
 import { ideaQuestionsJob } from "./idea-questions";
 import { ideaRiskJob } from "./idea-risk";
@@ -22,7 +21,8 @@ export const ideaJobs = [
     ideaEstimateJob,
     ideaDecisionPackJob,
     ideaImpactPlanJob,
+    ideaOwnerMatchJob,
 ];
 for (const job of ideaJobs)
     registerAiJob(job);
-export { ideaDecisionPackJob, ideaEnrichJob, ideaEstimateJob, ideaImpactPlanJob, ideaPreflightJob, ideaQuestionsJob, ideaRiskJob, ideaRouteJob, ideaSimilarJob, ideaValidateJob, };
+export { ideaDecisionPackJob, ideaEnrichJob, ideaEstimateJob, ideaImpactPlanJob, ideaOwnerMatchJob, ideaPreflightJob, ideaQuestionsJob, ideaRiskJob, ideaRouteJob, ideaSimilarJob, ideaValidateJob, };

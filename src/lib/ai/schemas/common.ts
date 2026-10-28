@@ -45,7 +45,7 @@ export const EstimatedImpactSchema = z.strictObject({
 
 export const NextActionSchema = z.strictObject({
   action: boundedText(500),
-  ownerRole: z.enum(["author", "business_owner", "back_office", "delivery"]),
+  ownerRole: z.enum(["author", "business_owner", "admin", "delivery"]),
   priority: z.enum(["low", "medium", "high"]),
   dueInDays: z.number().int().min(0).max(365).optional(),
 });

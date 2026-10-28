@@ -38,7 +38,7 @@ function insertDefaultVersion(tx: PromptTransaction, input: { jobKey: string; ve
   }).onConflictDoNothing().run();
 }
 
-/** Seeds system defaults as immutable prompt revisions without replacing back-office edits. */
+/** Seeds system defaults as immutable prompt revisions without replacing admin edits. */
 export function ensureAiPromptCatalogue() {
   db.transaction((tx) => {
     for (const prompt of aiPromptSeeds) {
@@ -59,7 +59,7 @@ export function ensureAiPromptCatalogue() {
         continue;
       }
 
-      // A human-edited active prompt is owned by back office. Never replace it during db:seed.
+      // An admin-edited active prompt must not be replaced during db:seed.
       if (!active.isDefault || active.contentHash === contentHash(prompt.systemPrompt)) continue;
 
       const [maximum] = tx.select({ value: max(aiPromptVersions.version) }).from(aiPromptVersions).where(eq(aiPromptVersions.jobKey, prompt.jobKey)).all();

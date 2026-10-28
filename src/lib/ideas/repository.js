@@ -8,25 +8,27 @@ import { awardPoints } from "../rewards/service";
 import { appendAuditEvent } from "../audit/service";
 import { defaultPriorityPolicy, resolvePriorityPolicy, scorePriority } from "./priority-policy";
 import { IDEA_VALIDATION_PASS_SCORE, ideaValidationPasses, normalizeIdeaValidationScore } from "./validation-score";
+import { completeOwnerMatchTx, failOwnerMatchTx } from "../ai/owner-match-workflow";
 export const AiRunEventTypeSchema = z.enum(["queued", "running", "succeeded", "failed", "retry"]);
+const safeAiRunEventErrorCodeSchema = z.enum([
+    "provider_error",
+    "provider_retry",
+    "provider_output_error",
+    "schema_validation_error",
+    "timeout",
+    "unknown",
+    "input_too_large",
+    "restricted_data",
+    "sensitive_data",
+    "prompt_injection",
+    "invalid_input",
+    "worker_provider_missing",
+    "unknown_job",
+    "idea_version_missing",
+]);
 const safeAiRunEventPayloadSchema = z.strictObject({
     attempt: z.number().int().min(0).max(100),
-    errorCode: z.enum([
-        "provider_error",
-        "provider_retry",
-        "provider_output_error",
-        "schema_validation_error",
-        "timeout",
-        "unknown",
-        "input_too_large",
-        "restricted_data",
-        "sensitive_data",
-        "prompt_injection",
-        "invalid_input",
-        "worker_provider_missing",
-        "unknown_job",
-        "idea_version_missing",
-    ]).optional(),
+    errorCode: safeAiRunEventErrorCodeSchema.optional(),
     retryAt: z.string().datetime().optional(),
 });
 const aiRunLease = new AsyncLocalStorage();
@@ -228,6 +230,8 @@ export async function recoverStaleAiRuns(now = new Date(), staleAfterMs = 120_00
             appendAiRunEventRecord(tx, run, exhausted ? "failed" : "retry", exhausted
                 ? { attempt: run.attemptCount, errorCode: "timeout" }
                 : { attempt: run.attemptCount, errorCode: "timeout", retryAt: now.toISOString() }, now);
+            if (exhausted)
+                failOwnerMatchTx(tx, run, "owner_match_lease_expired", now);
             recovered++;
         }
         return recovered;
@@ -254,7 +258,7 @@ export async function claimAiRun(runId, workerId, now = new Date()) {
         return claimed;
     });
 }
-export async function completeAiRun(runId, result) {
+export async function completeAiRun(runId, result, completionEvent) {
     await db.transaction((tx) => {
         const [run] = tx.select().from(aiRuns).where(eq(aiRuns.id, runId)).limit(1).all();
         if (!run)
@@ -282,6 +286,9 @@ export async function completeAiRun(runId, result) {
             resultJson: result.resultJson,
         }).run();
         appendAiRunEventRecord(tx, run, "succeeded", { attempt: run.attemptCount }, now);
+        if (completionEvent)
+            tx.insert(ideaEvents).values({ ...completionEvent, ideaId: run.ideaId }).run();
+        completeOwnerMatchTx(tx, run, result.resultJson, now);
     });
 }
 export async function failAiRun(runId, failure) {
@@ -300,7 +307,12 @@ export async function failAiRun(runId, failure) {
             completedAt: now,
             updatedAt: now,
         }).where(eq(aiRuns.id, runId)).run();
-        appendAiRunEventRecord(tx, run, "failed", { attempt: run.attemptCount, errorCode: failure.errorCode }, now);
+        // Keep detailed provider/job error codes on the run row, but restrict the
+        // public event payload to the safe vocabulary. Unknown codes must never
+        // abort this transaction and leave a terminal run stuck in `running`.
+        const eventErrorCode = safeAiRunEventErrorCodeSchema.safeParse(failure.errorCode);
+        appendAiRunEventRecord(tx, run, "failed", { attempt: run.attemptCount, errorCode: eventErrorCode.success ? eventErrorCode.data : "unknown" }, now);
+        failOwnerMatchTx(tx, run, failure.errorCode ?? "owner_match_failed", now);
     });
 }
 export async function requeueAiRun(runId, failure, availableAt = new Date()) {
@@ -343,9 +355,9 @@ export async function getAuthorizedIdeaSnapshot(actor, ideaId) {
         return null;
     // Auth sessions carry the account role, while older AI workflow callers use
     // the generic "user" / "admin" actor kinds. Treat regular account roles as
-    // user actors here and keep the owner check in force. Back-office and the
+    // user actors here and keep the owner check in force. Admin/maintainer and the
     // legacy admin actor retain their operational access.
-    const canViewAnyIdea = actor.kind === "admin" || actor.kind === "back_office";
+    const canViewAnyIdea = actor.kind === "admin" || actor.kind === "maintainer";
     const isUserActor = actor.kind === "user" || actor.kind === "employee" || actor.kind === "business_owner";
     if (!canViewAnyIdea && !isUserActor)
         return null;

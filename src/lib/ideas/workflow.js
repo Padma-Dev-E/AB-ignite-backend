@@ -1,13 +1,15 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../db/connection";
-import { ideas, notifications, users } from "../../db/schema";
+import { ideaEvents, ideas, notifications, users } from "../../db/schema";
 import { getAiJob } from "../ai/registry";
 import { getAiConfig } from "../ai/config-core";
 import "../ai/jobs";
 import { appendIdeaEvent, createAiRun, getAuthorizedIdeaSnapshot } from "./repository";
 const transitions = {
-    screening: ["returned", "business_review", "control_review", "poc"],
-    returned: ["screening", "business_review"],
+    screening: ["returned", "owner_matching"],
+    returned: ["screening"],
+    owner_matching: ["owner_assignment", "business_review"],
+    owner_assignment: ["business_review"],
     business_review: ["returned", "decision"],
     control_review: ["returned", "decision"],
     decision: ["poc", "rejected", "deferred"],
@@ -23,52 +25,51 @@ export function canTransitionIdeaStatus(actor, from, to) {
     if (!transitions[from]?.includes(to))
         return false;
     if (actor.kind === "system")
-        return from === "screening" && ["returned", "business_review", "control_review"].includes(to);
-    if (actor.kind === "back_office")
-        return ["screening", "control_review", "decision", "poc", "implementation", "deferred"].includes(from);
+        return from === "screening" && ["returned", "owner_matching"].includes(to);
+    if (actor.kind === "admin" || actor.kind === "maintainer")
+        return from === "screening" && ["returned", "owner_matching"].includes(to);
     if (actor.kind === "business_owner")
-        return from === "business_review" && ["returned", "decision"].includes(to);
+        return ["business_review", "control_review", "decision", "poc", "implementation"].includes(from) && transitions[from].includes(to);
     return false;
 }
 export async function transitionIdeaStatus(actor, ideaId, to, reason) {
     if (!reason.trim())
         throw new Error("A reason is required for every workflow transition");
-    const [idea] = await db.select().from(ideas).where(eq(ideas.id, ideaId)).limit(1).all();
-    if (!idea)
-        throw new Error("Idea not found");
-    const from = idea.status;
-    const [user] = actor.id ? await db.select({ role: users.role }).from(users).where(eq(users.id, Number(actor.id))).limit(1).all() : [];
-    const effectiveActor = actor.kind === "system" || actor.kind === "ai" ? actor : { ...actor, kind: user?.role ?? "employee" };
-    if (!canTransitionIdeaStatus(effectiveActor, from, to))
-        throw new Error("Actor is not authorized for this workflow transition");
-    if (effectiveActor.kind === "business_owner") {
-        const [assigned] = await db.select({ assignedUserId: ideas.assignedUserId }).from(ideas).where(eq(ideas.id, ideaId)).limit(1).all();
-        if (assigned?.assignedUserId !== Number(actor.id))
+    return db.transaction((tx) => {
+        const idea = tx.select().from(ideas).where(eq(ideas.id, ideaId)).limit(1).get();
+        if (!idea)
+            throw new Error("Idea not found");
+        const user = actor.id ? tx.select({ role: users.role }).from(users).where(eq(users.id, Number(actor.id))).limit(1).get() : undefined;
+        const from = idea.status;
+        const effectiveActor = actor.kind === "system" || actor.kind === "ai" ? actor : { ...actor, kind: user?.role ?? "employee" };
+        if (!canTransitionIdeaStatus(effectiveActor, from, to))
+            throw new Error("Actor is not authorized for this workflow transition");
+        if (effectiveActor.kind === "business_owner" && idea.assignedUserId !== Number(actor.id))
             throw new Error("Idea is not assigned to this governance workspace member");
-    }
-    const now = new Date();
-    const [updated] = await db.update(ideas).set({ status: to, updatedAt: now }).where(and(eq(ideas.id, ideaId), eq(ideas.status, from))).returning().all();
-    if (!updated)
-        throw new Error("Idea status changed before this transition could be applied");
-    await appendIdeaEvent({
-        ideaId,
-        actorType: actor.kind === "employee" ? "user" : actor.kind === "system" || actor.kind === "ai" ? actor.kind : "admin",
-        actorId: actor.id ? Number(actor.id) : null,
-        eventType: "status_changed",
-        fromStatus: from,
-        toStatus: to,
-        metadataJson: JSON.stringify({ reason }),
+        const now = new Date();
+        const updated = tx.update(ideas).set({ status: to, updatedAt: now }).where(and(eq(ideas.id, ideaId), eq(ideas.status, from))).returning().get();
+        if (!updated)
+            throw new Error("Idea status changed before this transition could be applied");
+        tx.insert(ideaEvents).values({
+            ideaId,
+            actorType: effectiveActor.kind === "business_owner" || effectiveActor.kind === "maintainer" ? effectiveActor.kind : actor.kind === "system" || actor.kind === "ai" ? actor.kind : actor.kind === "employee" ? "user" : "admin",
+            actorId: actor.id ? Number(actor.id) : null,
+            eventType: "status_changed",
+            fromStatus: from,
+            toStatus: to,
+            metadataJson: JSON.stringify({ reason }),
+        }).run();
+        const accepted = to === "poc";
+        const stageLabels = { screening: "Submitted", returned: "Returned for improvement", owner_matching: "Business owner matching", owner_assignment: "Business owner assignment", business_review: "Business review", control_review: "Control review", decision: "Transformation confirmation", poc: "Proof of concept", implementation: "Implementation", implemented: "Impact", rejected: "Rejected", deferred: "Deferred" };
+        tx.insert(notifications).values({
+            userId: updated.authorId,
+            type: accepted ? "idea_accepted" : "idea_status_changed",
+            title: accepted ? "Idea accepted for proof of concept" : "Idea workflow updated",
+            body: accepted ? `Congratulations, ${updated.reference} has been accepted (${to}).` : `${updated.reference} moved to ${stageLabels[to]} (${to.replaceAll("_", " ")}).`,
+            link: `/ideas/${ideaId}`,
+        }).onConflictDoNothing().run();
+        return updated;
     });
-    const accepted = to === "poc";
-    const stageLabels = { screening: "Submitted", returned: "Returned for improvement", business_review: "Business review", control_review: "Control review", decision: "Transformation confirmation", poc: "Proof of concept", implementation: "Implementation", implemented: "Impact", rejected: "Rejected", deferred: "Deferred" };
-    await db.insert(notifications).values({
-        userId: updated.authorId,
-        type: accepted ? "idea_accepted" : "idea_status_changed",
-        title: accepted ? "Idea accepted for proof of concept" : "Idea workflow updated",
-        body: accepted ? `Congratulations, ${updated.reference} has been accepted (${to}).` : `${updated.reference} moved to ${stageLabels[to]} (${to.replaceAll("_", " ")}).`,
-        link: `/ideas/${ideaId}`,
-    }).onConflictDoNothing().run();
-    return updated;
 }
 export async function runIdeaScreeningWorkflow(ideaId, versionId, actor, idempotencyKey) {
     const snapshot = await getAuthorizedIdeaSnapshot(actor, ideaId);
@@ -81,7 +82,6 @@ export async function runIdeaScreeningWorkflow(ideaId, versionId, actor, idempot
         ideaVersionId: version.id,
         jobKey: job.key,
         jobVersion: job.version,
-        promptVersion: job.version,
         model: job.model ?? getAiConfig().model,
         idempotencyKey: idempotencyKey ?? `idea:${ideaId}:version:${version.id}:idea.preflight:v1`,
         correlationId: `idea:${ideaId}:version:${version.id}`,

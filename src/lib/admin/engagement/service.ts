@@ -16,7 +16,7 @@ const announcementSchema = z.strictObject({ title: z.string().trim().min(1).max(
 function verify(tx: Tx, actor: Actor, now: Date) {
   const user = tx.select().from(users).where(eq(users.id, actor.userId)).get();
   const session = tx.select().from(refreshTokens).where(eq(refreshTokens.id, actor.sessionId)).get();
-  if (!user || user.role !== "back_office" || !user.isActive || !session || session.userId !== user.id || !isSessionActive(session, user, now)) throw new AuthorizationError("Administrator session is no longer valid.");
+  if (!user || user.role !== "admin" || !user.isActive || !session || session.userId !== user.id || !isSessionActive(session, user, now)) throw new AuthorizationError("Administrator session is no longer valid.");
 }
 function mutate<T extends { id: number }>(actor: Actor, action: string, id: number | null, key: string, data: unknown, change: (tx: Tx, now: Date) => T) {
   const reason = requirePrivilegedReason(actor.reason);

@@ -1,6 +1,6 @@
 import { AdminInputError } from "../query";
 export const settingKeys = ["minimum_priority_score", "priority_point_rules", "priority_level_rules", "priority_recommendation_rules", "priority_kpis", "priority_bands", "sla_days", "required_controls", "departments", "demo_access", "roles"];
-const roles = new Set(["employee", "back_office", "business_owner"]);
+const roles = new Set(["employee", "admin", "maintainer", "business_owner"]);
 // Keep policy keys aligned with the stages consumed by governance/service.ts.
 const slaStages = new Set(["screening", "business_review", "control_review", "decision", "poc", "implementation"]);
 const priorityRecords = new Set(["priority_point_rules", "priority_level_rules", "priority_recommendation_rules", "priority_kpis", "priority_bands"]);
@@ -37,7 +37,7 @@ export function validatePolicySetting(key, value) {
             throw new AdminInputError(`${key === "departments" ? "Departments" : "Required controls"} must be a list of unique names.`);
     }
     else if (key === "roles") {
-        if (!stringList(parsed, 3, 40) || parsed.some((item) => !roles.has(item)))
+        if (!stringList(parsed, 4, 40) || parsed.some((item) => !roles.has(item)))
             throw new AdminInputError("Roles must be a list of unique supported names.");
     }
     else if (key === "demo_access") {

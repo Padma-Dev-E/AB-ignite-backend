@@ -17,7 +17,7 @@ test("closing and reopening a campaign restores the sole pin and accepts feedbac
     const { getFeedback, submitFeedback } = await import("../../articles/service");
     migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
 
-    const admin = db.insert(users).values({ name: "Campaign admin", email: "campaign-admin@example.test", role: "back_office", passwordHash: "test" }).returning().get();
+    const admin = db.insert(users).values({ name: "Campaign admin", email: "campaign-admin@example.test", role: "admin", passwordHash: "test" }).returning().get();
     const employee = db.insert(users).values({ name: "Campaign employee", email: "campaign-employee@example.test", passwordHash: "test" }).returning().get();
     const session = db.insert(refreshTokens).values({ userId: admin.id, tokenHash: "campaign-admin-session", expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning().get();
     const employeeSession = db.insert(refreshTokens).values({ userId: employee.id, tokenHash: "campaign-employee-session", expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning().get();

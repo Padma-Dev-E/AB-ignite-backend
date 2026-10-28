@@ -40,7 +40,7 @@ export async function getAdminSettings() {
 function assertActor(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], actor: Actor, now: Date) {
   const user = tx.select().from(users).where(eq(users.id, actor.userId)).limit(1).get();
   const session = tx.select().from(refreshTokens).where(eq(refreshTokens.id, actor.sessionId)).limit(1).get();
-  if (!user || user.role !== "back_office" || !user.isActive || !session || session.userId !== user.id || !isSessionActive(session, user, now)) throw new AuthorizationError("Back-office session is no longer valid.");
+  if (!user || user.role !== "admin" || !user.isActive || !session || session.userId !== user.id || !isSessionActive(session, user, now)) throw new AuthorizationError("Admin session is no longer valid.");
 }
 
 export async function updateAdminSettings(actor: Actor, input: { priority?: Partial<Record<SettingKey, string>>; pointRules?: Array<{ code: string; points: number; active: boolean }>; recommendationRules?: Array<{ topic: string; thresholdPercent: number; reasonTemplate: string; active: boolean }>; levels?: Array<{ id: number; name: string; description: string | null; minimumPoints: number; sortOrder: number }> }) {

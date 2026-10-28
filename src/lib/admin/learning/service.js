@@ -31,7 +31,7 @@ function assertActor(tx, actor, now) {
         .limit(1)
         .get();
     if (!user ||
-        user.role !== "back_office" ||
+        user.role !== "admin" ||
         !user.isActive ||
         !session ||
         session.userId !== user.id ||

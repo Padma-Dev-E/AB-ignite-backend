@@ -12,6 +12,8 @@ export const CAPABILITIES = {
     REWARDS_MANAGE: "rewards.manage",
     AI_RUNS_READ: "ai.runs.read",
     AI_RUNS_MANAGE: "ai.runs.manage",
+    AI_PROMPTS_READ: "ai.prompts.read",
+    AI_PROMPTS_MANAGE: "ai.prompts.manage",
     GOVERNANCE_READ: "governance.read",
     GOVERNANCE_MANAGE: "governance.manage",
 };
@@ -25,11 +27,18 @@ const ownerCapabilities = [
     CAPABILITIES.GOVERNANCE_READ,
     CAPABILITIES.GOVERNANCE_MANAGE,
 ];
-const backOfficeCapabilities = Object.values(CAPABILITIES);
+const adminCapabilities = Object.values(CAPABILITIES);
+const maintainerCapabilities = [
+    CAPABILITIES.IDEAS_READ,
+    CAPABILITIES.PROFILE_READ,
+    CAPABILITIES.GOVERNANCE_READ,
+    CAPABILITIES.GOVERNANCE_MANAGE,
+];
 const roleCapabilities = {
     employee: employeeCapabilities,
     business_owner: ownerCapabilities,
-    back_office: backOfficeCapabilities,
+    admin: adminCapabilities,
+    maintainer: maintainerCapabilities,
 };
 export function capabilitiesForRole(role) {
     return [...roleCapabilities[role]];

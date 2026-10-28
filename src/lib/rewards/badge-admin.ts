@@ -32,7 +32,7 @@ function assertAdmin(tx: RewardsTx, actor: BadgeAdminActor, now: Date) {
   if (!Number.isSafeInteger(actor.userId) || actor.userId < 1 || !Number.isSafeInteger(actor.sessionId) || actor.sessionId < 1) throw new AuthorizationError("Administrator session is invalid.");
   const user = tx.select().from(users).where(eq(users.id, actor.userId)).get();
   const session = tx.select().from(refreshTokens).where(eq(refreshTokens.id, actor.sessionId)).get();
-  if (!user || user.role !== "back_office" || !user.isActive || !session || session.userId !== user.id || !isSessionActive(session, user, now)) throw new AuthorizationError("Administrator session is no longer valid.");
+  if (!user || user.role !== "admin" || !user.isActive || !session || session.userId !== user.id || !isSessionActive(session, user, now)) throw new AuthorizationError("Administrator session is no longer valid.");
 }
 
 function requestKey(value: string) {

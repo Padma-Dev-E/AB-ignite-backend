@@ -9,7 +9,7 @@ import { verifyPassword } from "../../auth/password-core";
 
 test("admin operations persist, revoke sessions, audit reasons, and return no secrets", async () => {
   const stamp = `${Date.now()}-${Math.random()}`;
-  const actor = db.insert(users).values({ name: "Admin actor", email: `admin-actor-${stamp}@example.test`, role: "back_office", passwordHash: "actor-secret" }).returning({ id: users.id }).get();
+  const actor = db.insert(users).values({ name: "Admin actor", email: `admin-actor-${stamp}@example.test`, role: "admin", passwordHash: "actor-secret" }).returning({ id: users.id }).get();
   const target = db.insert(users).values({ name: "Admin target", email: `admin-target-${stamp}@example.test`, passwordHash: "target-secret", failedLoginAttempts: 5, lockedUntil: new Date(Date.now() + 60_000) }).returning({ id: users.id }).get();
   const actorSession = db.insert(refreshTokens).values({ userId: actor.id, tokenHash: `actor-token-${stamp}`, expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning({ id: refreshTokens.id }).get();
   const targetSession = db.insert(refreshTokens).values({ userId: target.id, tokenHash: `target-token-${stamp}`, expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning({ id: refreshTokens.id }).get();
@@ -23,9 +23,9 @@ test("admin operations persist, revoke sessions, audit reasons, and return no se
     assert.equal(detail.id, target.id);
     assert.equal(JSON.stringify(detail).includes("target-secret"), false);
     assert.equal(JSON.stringify(await listUserSessions(target.id, { limit: 10, after: null })).includes("target-token"), false);
-    assert.throws(() => changeUserRole(context, target.id, "back_office", " "));
+    assert.throws(() => changeUserRole(context, target.id, "admin", " "));
     assert.throws(() => setUserActive(context, actor.id, false, "self deactivation"));
-    await changeUserRole(context, target.id, "back_office", "approved promotion");
+    await changeUserRole(context, target.id, "admin", "approved promotion");
     assert.equal(db.select().from(refreshTokens).where(eq(refreshTokens.id, targetSession.id)).get()?.revokedAt instanceof Date, true);
     await assert.rejects(adminAccess({ user: { id: String(target.id), sessionId: String(targetSession.id) } } as Parameters<typeof adminAccess>[0], CAPABILITIES.USERS_READ));
     await resetUserSecurity(context, target.id, "recover account");
@@ -80,7 +80,7 @@ test("directory search filters before pagination and treats SQL wildcards litera
 
 test("role assignment, user creation, password reset and individual revocation are audited", async () => {
   const stamp = `${Date.now()}-${Math.random()}`;
-  const actor = db.insert(users).values({ name: "Admin", email: `admin-rbac-${stamp}@example.test`, role: "back_office", passwordHash: "test" }).returning({ id: users.id }).get();
+  const actor = db.insert(users).values({ name: "Admin", email: `admin-rbac-${stamp}@example.test`, role: "admin", passwordHash: "test" }).returning({ id: users.id }).get();
   const actorSession = db.insert(refreshTokens).values({ userId: actor.id, tokenHash: `admin-rbac-${stamp}`, expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning({ id: refreshTokens.id }).get();
   const context = { userId: actor.id, sessionId: actorSession.id };
   const created = await createUser(context, { name: "Owner", email: `owner-${stamp}@example.test`, department: "Risk", role: "business_owner" }, "approved onboarding");
@@ -97,12 +97,12 @@ test("role assignment, user creation, password reset and individual revocation a
     const password = await resetUserPassword(context, userId, "verified identity");
     assert.equal(await verifyPassword(db.select().from(users).where(eq(users.id, userId)).get()!.passwordHash, password.temporaryPassword), true);
     assert.equal(db.select().from(users).where(eq(users.id, userId)).get()?.mustChangePassword, true);
-    const adminCreated = await createUser(context, { name: "Managed back office", email: `managed-admin-${stamp}@example.test`, department: "Risk", role: "back_office" }, "approved back-office onboarding");
-    assert.equal(adminCreated.user.role, "back_office");
+    const adminCreated = await createUser(context, { name: "Managed back office", email: `managed-admin-${stamp}@example.test`, department: "Risk", role: "admin" }, "approved back-office onboarding");
+    assert.equal(adminCreated.user.role, "admin");
     assert.equal(adminCreated.user.mustChangePassword, true);
     assert.ok(db.select().from(refreshTokens).where(eq(refreshTokens.id, sessionB.id)).get()?.revokedAt);
-    await changeUserRole(context, userId, "back_office", "transfer to transformation");
-    assert.equal(db.select().from(users).where(eq(users.id, userId)).get()?.role, "back_office");
+    await changeUserRole(context, userId, "admin", "transfer to transformation");
+    assert.equal(db.select().from(users).where(eq(users.id, userId)).get()?.role, "admin");
     const audit = db.select().from(auditEvents).where(eq(auditEvents.targetId, String(userId))).all();
     assert.ok(audit.some((row) => row.action === "admin.user.created"));
     assert.ok(audit.some((row) => row.action === "admin.user.password_reset"));
@@ -117,12 +117,12 @@ test("configured department and role policy restricts user administration", asyn
   const stamp = `${Date.now()}-${Math.random()}`;
   db.run(sql`SAVEPOINT admin_user_policy_test`);
   try {
-    const actor = db.insert(users).values({ name: "Policy admin", email: `policy-admin-${stamp}@example.test`, role: "back_office", passwordHash: "test" }).returning({ id: users.id }).get();
+    const actor = db.insert(users).values({ name: "Policy admin", email: `policy-admin-${stamp}@example.test`, role: "admin", passwordHash: "test" }).returning({ id: users.id }).get();
     const session = db.insert(refreshTokens).values({ userId: actor.id, tokenHash: `policy-admin-${stamp}`, expiresAt: new Date(Date.now() + 60_000) }).returning({ id: refreshTokens.id }).get();
     const context = { userId: actor.id, sessionId: session.id };
     db.insert(ideaSettings).values([{ key: "departments", value: '["Risk"]' }, { key: "roles", value: '["employee","business_owner"]' }]).onConflictDoUpdate({ target: ideaSettings.key, set: { value: sql`excluded.value` } }).run();
     await assert.rejects(createUser(context, { name: "Blocked", email: `blocked-${stamp}@example.test`, department: "Treasury", role: "employee" }, "Policy check"), /allowed department/);
-    await assert.rejects(createUser(context, { name: "Blocked", email: `blocked2-${stamp}@example.test`, department: "Risk", role: "back_office" }, "Policy check"), /allowed role/);
+    await assert.rejects(createUser(context, { name: "Blocked", email: `blocked2-${stamp}@example.test`, department: "Risk", role: "admin" }, "Policy check"), /allowed role/);
     const created = await createUser(context, { name: "Allowed", email: `allowed-${stamp}@example.test`, department: "Risk", role: "employee" }, "Approved onboarding");
     assert.equal(created.user.department, "Risk");
     assert.equal(changeUserRole(context, created.user.id, "business_owner", "Approved transfer").role, "business_owner");

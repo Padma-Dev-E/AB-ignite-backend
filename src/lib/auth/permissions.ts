@@ -19,7 +19,7 @@ export const CAPABILITIES = {
 } as const;
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
-export type UserRole = "employee" | "back_office" | "business_owner";
+export type UserRole = "employee" | "admin" | "maintainer" | "business_owner";
 
 const employeeCapabilities: readonly Capability[] = [
   CAPABILITIES.IDEAS_READ,
@@ -31,12 +31,19 @@ const ownerCapabilities: readonly Capability[] = [
   CAPABILITIES.GOVERNANCE_READ,
   CAPABILITIES.GOVERNANCE_MANAGE,
 ];
-const backOfficeCapabilities: readonly Capability[] = Object.values(CAPABILITIES);
+const adminCapabilities: readonly Capability[] = Object.values(CAPABILITIES);
+const maintainerCapabilities: readonly Capability[] = [
+  CAPABILITIES.IDEAS_READ,
+  CAPABILITIES.PROFILE_READ,
+  CAPABILITIES.GOVERNANCE_READ,
+  CAPABILITIES.GOVERNANCE_MANAGE,
+];
 
 const roleCapabilities: Record<UserRole, readonly Capability[]> = {
   employee: employeeCapabilities,
   business_owner: ownerCapabilities,
-  back_office: backOfficeCapabilities,
+  admin: adminCapabilities,
+  maintainer: maintainerCapabilities,
 };
 
 export function capabilitiesForRole(role: UserRole): readonly Capability[] {

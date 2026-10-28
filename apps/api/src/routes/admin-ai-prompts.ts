@@ -24,7 +24,7 @@ async function requirePromptCapability(app: FastifyInstance, request: FastifyReq
     return actor;
   } catch (error) {
     if (error instanceof AuthorizationError) {
-      sendError(reply, request, "forbidden", "Back-office prompt permissions are required.", 403);
+      sendError(reply, request, "forbidden", "Admin prompt permissions are required.", 403);
       return null;
     }
     throw error;

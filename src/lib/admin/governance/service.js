@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../../../db/connection";
 import { aiRuns, auditEvents, ideaEvents, ideaReviews, ideaSettings, ideaSubmissions, ideas, notifications, refreshTokens, users } from "../../../db/schema";
 import { isSessionActive } from "../../../auth/security-core";
@@ -6,6 +6,9 @@ import { AuthorizationError } from "../../auth/authorization-core";
 import { buildAuditRecord } from "../../audit/service";
 import { AdminConflictError, AdminNotFoundError } from "../query";
 import { resolveRequiredControlsPolicy } from "../settings/validation";
+function governanceEventActor(role) {
+    return role === "maintainer" || role === "business_owner" ? role : "admin";
+}
 const safeIdea = { id: ideas.id, reference: ideas.reference, title: ideas.title, summary: ideas.summary, problem: ideas.problem, solution: ideas.solution, benefits: ideas.benefits, risks: ideas.risks, kind: ideas.kind, category: ideas.category, status: ideas.status, assignedUserId: ideas.assignedUserId, dueAt: ideas.dueAt, priorityBand: ideas.priorityBand, priorityScore: ideas.priorityScore, authorId: ideas.authorId, authorName: users.name, department: users.department, createdAt: ideas.createdAt, updatedAt: ideas.updatedAt };
 function assertActor(tx, actor, now) {
     const user = tx.select({ id: users.id, role: users.role, isActive: users.isActive, sessionVersion: users.sessionVersion }).from(users).where(eq(users.id, actor.userId)).limit(1).get();
@@ -34,22 +37,19 @@ function controlSnapshot(tx, ideaId) {
     return parsed(ownerApproval?.metadataJson ?? null);
 }
 function approvedControls(tx, ideaId) {
-    const events = tx.select({ metadataJson: ideaEvents.metadataJson, actorId: ideaEvents.actorId }).from(ideaEvents)
+    const events = tx.select({ metadataJson: ideaEvents.metadataJson }).from(ideaEvents)
         .where(and(eq(ideaEvents.ideaId, ideaId), eq(ideaEvents.eventType, "control_approved"))).all();
     const names = new Set();
-    const approvers = new Set();
     let legacyApproval = false;
     for (const event of events) {
         const name = parsed(event.metadataJson)?.controlName;
         if (typeof name === "string") {
             names.add(name.toLowerCase());
-            if (event.actorId !== null)
-                approvers.add(event.actorId);
         }
         else
             legacyApproval = true;
     }
-    return { names, approvers, legacyApproval };
+    return { names, legacyApproval };
 }
 function queueDueAt(item, days, startAt = item.createdAt) {
     return { ...item, dueAt: item.dueAt ?? new Date(startAt.getTime() + days * 86_400_000) };
@@ -60,20 +60,21 @@ function governanceAuditMessage(action, role, reference, from) {
         return: "returned for revision",
         reject: "rejected",
         defer: "deferred",
-        accept: "accepted for proof of concept",
+        accept: from === "screening" ? "accepted for business owner matching" : "accepted",
         approve: from === "control_review" ? "approved at control review" : "approved by the business owner",
         not_recommended: from === "control_review" ? "not recommended at control review" : "not recommended by the business owner",
         confirm: "confirmed for proof of concept",
         start_implementation: "moved into implementation",
         mark_implemented: "marked as implemented",
     };
-    const actor = role === "business_owner" ? "Business owner" : "Back office";
-    return `${actor} ${actionMessages[action] ?? "updated"} ${reference} from ${from.replaceAll("_", " ")}.`;
+    const actor = role === "business_owner" ? "Business owner" : role === "maintainer" ? "Maintainer" : "Admin";
+    const stage = from.replaceAll("_", " ");
+    return `${actor} ${actionMessages[action] ?? "updated"} ${reference} from ${stage}.`;
 }
 export async function listBusinessOwners(actor, limit = 100, after = null) {
-    await requireGovernanceRole(actor, ["back_office"]);
-    const rows = db.select({ id: users.id, name: users.name, department: users.department }).from(users)
-        .where(and(eq(users.role, "business_owner"), eq(users.isActive, true), after ? sql `${users.id} < ${after}` : undefined))
+    const role = await requireGovernanceRole(actor, ["admin", "maintainer", "business_owner"]);
+    const rows = db.select({ id: users.id, name: users.name, department: users.department, businessProfile: users.businessProfile }).from(users)
+        .where(and(eq(users.role, "business_owner"), eq(users.isActive, true), role === "business_owner" ? eq(users.id, actor.userId) : undefined, after ? sql `${users.id} < ${after}` : undefined))
         .orderBy(desc(users.id)).limit(limit + 1).all();
     return { items: rows.slice(0, limit), nextAfter: rows.length > limit ? rows[limit - 1]?.id ?? null : null };
 }
@@ -87,12 +88,14 @@ function parsed(json) {
         return null;
     }
 }
-export async function listScreeningQueue(limit = 50, after = null) {
+export async function listScreeningQueue(actor, limit = 50, after = null) {
+    await requireGovernanceRole(actor, ["admin", "maintainer"]);
     const [count] = await db.select({ value: sql `count(*)` }).from(ideas).where(eq(ideas.status, "screening")).all();
     const rows = await db.select({ ...safeIdea, submittedAt: ideaSubmissions.submittedAt, aiValidationScore: ideaSubmissions.aiValidationScore, aiValidationAttempts: ideaSubmissions.aiValidationAttempts, submittedWithLowAiScore: ideaSubmissions.submittedWithLowAiScore }).from(ideas).innerJoin(users, eq(users.id, ideas.authorId)).leftJoin(ideaSubmissions, eq(ideaSubmissions.ideaId, ideas.id)).where(and(eq(ideas.status, "screening"), after ? sql `${ideas.id} < ${after}` : undefined)).orderBy(desc(ideas.id)).limit(limit + 1).all();
     return { items: rows.slice(0, limit).map(({ submittedAt, ...row }) => queueDueAt(row, stageDays("screening"), submittedAt ?? row.createdAt)), nextAfter: rows.length > limit ? rows[limit - 1]?.id ?? null : null, total: Number(count?.value ?? 0) };
 }
-export async function listTransformationQueue(limit = 50, after = null) {
+export async function listTransformationQueue(actor, limit = 50, after = null) {
+    await requireGovernanceRole(actor, ["admin", "maintainer"]);
     const pageSize = Math.max(1, Math.min(100, Math.trunc(limit) || 50));
     const eligibility = and(eq(ideaReviews.decision, "approved"), eq(ideas.status, "decision"), eq(ideaReviews.id, sql `(select max(latest_review.id) from idea_reviews as latest_review where latest_review."ideaId" = ${ideas.id} and latest_review.decision = 'approved')`));
     const [count] = await db.select({ value: sql `count(*)` }).from(ideaReviews).innerJoin(ideas, eq(ideas.id, ideaReviews.ideaId)).where(eligibility).all();
@@ -103,34 +106,36 @@ export async function listTransformationQueue(limit = 50, after = null) {
     return { items: items.map((row) => queueDueAt(row, stageDays("decision"))), nextAfter: rows.length > pageSize ? items.at(-1)?.approvalId ?? null : null, total: Number(count?.value ?? 0) };
 }
 export async function listRoutedEvaluations(actor, limit = 50, after = null) {
-    const role = await requireGovernanceRole(actor, ["business_owner", "back_office"]);
-    const stage = role === "business_owner" ? "business_review" : "control_review";
+    const role = await requireGovernanceRole(actor, ["business_owner", "admin", "maintainer"]);
+    const stage = "control_review";
     const rows = await db.select({ ...safeIdea, aiValidationScore: ideaSubmissions.aiValidationScore, aiValidationAttempts: ideaSubmissions.aiValidationAttempts, submittedWithLowAiScore: ideaSubmissions.submittedWithLowAiScore }).from(ideas).innerJoin(users, eq(users.id, ideas.authorId)).leftJoin(ideaSubmissions, eq(ideaSubmissions.ideaId, ideas.id))
-        .where(and(eq(ideas.status, stage), role === "business_owner" ? eq(ideas.assignedUserId, actor.userId) : undefined, after ? sql `${ideas.id} < ${after}` : undefined))
+        .where(and(role === "business_owner" ? and(inArray(ideas.status, ["business_review", "control_review", "decision", "poc", "implementation", "implemented"]), eq(ideas.assignedUserId, actor.userId)) : eq(ideas.status, stage), after ? sql `${ideas.id} < ${after}` : undefined))
         .orderBy(desc(ideas.id)).limit(limit + 1).all();
     const page = rows.slice(0, limit);
     return { items: page.map((row) => queueDueAt(row, stageDays(stage))), nextAfter: rows.length > limit ? page.at(-1)?.id ?? null : null };
 }
 export async function listDeliveryQueue(actor, limit = 10, after = null) {
-    await requireGovernanceRole(actor, ["back_office"]);
+    await requireGovernanceRole(actor, ["admin", "maintainer"]);
     const rows = await db.select(safeIdea).from(ideas).innerJoin(users, eq(users.id, ideas.authorId))
-        .where(and(inArray(ideas.status, ["poc", "implementation", "implemented"]), after ? sql `${ideas.id} < ${after}` : undefined))
+        .where(and(inArray(ideas.status, ["owner_matching", "owner_assignment", "business_review", "control_review", "decision", "poc", "implementation", "implemented"]), after ? sql `${ideas.id} < ${after}` : undefined))
         .orderBy(desc(ideas.id)).limit(limit + 1).all();
     const page = rows.slice(0, limit);
     return { items: page, nextAfter: rows.length > limit ? page.at(-1)?.id ?? null : null };
 }
 export async function getEvaluation(ideaId, actor) {
-    const role = await requireGovernanceRole(actor, ["back_office", "business_owner"]);
+    const role = await requireGovernanceRole(actor, ["admin", "maintainer", "business_owner"]);
     const [idea] = await db.select(safeIdea).from(ideas).innerJoin(users, eq(users.id, ideas.authorId)).where(eq(ideas.id, ideaId)).limit(1).all();
     if (!idea)
         throw new AdminNotFoundError("Idea not found.");
     if (idea.status === "draft" ||
-        (role === "business_owner" && (idea.status !== "business_review" || idea.assignedUserId !== actor.userId)) ||
-        (role === "back_office" && !["screening", "control_review", "decision", "poc", "implementation", "implemented"].includes(idea.status)))
+        (role === "business_owner" && idea.assignedUserId !== actor.userId))
         throw new AdminNotFoundError("Idea not found.");
     const [submission] = await db.select().from(ideaSubmissions).where(eq(ideaSubmissions.ideaId, ideaId)).limit(1).all();
     const [assessment] = await db.select({ resultJson: aiRuns.resultJson, jobKey: aiRuns.jobKey, completedAt: aiRuns.completedAt }).from(aiRuns).where(and(eq(aiRuns.ideaId, ideaId), eq(aiRuns.status, "succeeded"), inArray(aiRuns.jobKey, ["idea.validate", "idea.decision_pack"]))).orderBy(desc(aiRuns.createdAt)).limit(1).all();
     const [route] = await db.select({ metadataJson: ideaEvents.metadataJson, createdAt: ideaEvents.createdAt }).from(ideaEvents).where(and(eq(ideaEvents.ideaId, ideaId), eq(ideaEvents.eventType, "business_owner_routed"))).orderBy(desc(ideaEvents.id)).limit(1).all();
+    const [ownerMatchEvent] = await db.select({ eventType: ideaEvents.eventType, metadataJson: ideaEvents.metadataJson, createdAt: ideaEvents.createdAt }).from(ideaEvents)
+        .where(and(eq(ideaEvents.ideaId, ideaId), inArray(ideaEvents.eventType, ["business_owner_assigned", "owner_match_manual_required"])))
+        .orderBy(desc(ideaEvents.id)).limit(1).all();
     const [submitted] = await db.select({ metadataJson: ideaEvents.metadataJson }).from(ideaEvents).where(and(eq(ideaEvents.ideaId, ideaId), eq(ideaEvents.eventType, "submitted"))).orderBy(desc(ideaEvents.id)).limit(1).all();
     const metrics = submission ? parsed(submission.metricsJson) : null;
     const submittedBreakdown = parsed(submitted?.metadataJson ?? null)?.breakdown;
@@ -142,9 +147,65 @@ export async function getEvaluation(ideaId, actor) {
     ]).map((entry) => ({ ...entry, explanation: metrics[`${entry.key}Explanation`] ?? null })) : null;
     const required = idea.status === "control_review" ? controlSnapshot(db, ideaId)?.requiredControls ?? [] : [];
     const approved = idea.status === "control_review" ? approvedControls(db, ideaId).names : new Set();
-    return { idea, submission: submission ? { answers: parsed(submission.answersJson), metrics, breakdown, score: submission.score, minimumScore: submission.minimumScore, validationPassed: submission.validationPassed, aiValidationScore: submission.aiValidationScore, aiValidationAttempts: submission.aiValidationAttempts, submittedWithLowAiScore: submission.submittedWithLowAiScore, differentiation: submission.differentiation, submittedAt: submission.submittedAt } : null, assessment: assessment ? { jobKey: assessment.jobKey, completedAt: assessment.completedAt, result: parsed(assessment.resultJson) } : null, route: route ? { ...parsed(route.metadataJson), createdAt: route.createdAt } : null, controlReview: idea.status === "control_review" ? { required, approved: required.filter((name) => approved.has(name.toLowerCase())), pending: required.filter((name) => !approved.has(name.toLowerCase())) } : null };
+    const ownerMatchMetadata = parsed(ownerMatchEvent?.metadataJson ?? null) ?? null;
+    return { idea, submission: submission ? { answers: parsed(submission.answersJson), metrics, breakdown, score: submission.score, minimumScore: submission.minimumScore, validationPassed: submission.validationPassed, aiValidationScore: submission.aiValidationScore, aiValidationAttempts: submission.aiValidationAttempts, submittedWithLowAiScore: submission.submittedWithLowAiScore, differentiation: submission.differentiation, submittedAt: submission.submittedAt } : null, assessment: assessment ? { jobKey: assessment.jobKey, completedAt: assessment.completedAt, result: parsed(assessment.resultJson) } : null, route: route ? { ...parsed(route.metadataJson), createdAt: route.createdAt } : null, ownerMatch: ownerMatchEvent ? { ...ownerMatchMetadata, eventType: ownerMatchEvent.eventType, createdAt: ownerMatchEvent.createdAt } : null, controlReview: idea.status === "control_review" ? { required, approved: required.filter((name) => approved.has(name.toLowerCase())), pending: required.filter((name) => !approved.has(name.toLowerCase())) } : null };
 }
-export async function decideGovernance(actor, ideaId, action, reasonInput, businessOwnerId, dueAt, idempotencyKey, controlName) {
+export async function listGovernanceIdeas(actor, limit = 50, after = null) {
+    await requireGovernanceRole(actor, ["admin", "maintainer"]);
+    const rows = await db.select({ ...safeIdea, assignedOwnerName: sql `(select name from users where id = ${ideas.assignedUserId})` })
+        .from(ideas).innerJoin(users, eq(users.id, ideas.authorId))
+        .where(and(sql `${ideas.status} <> 'draft'`, after ? sql `${ideas.id} < ${after}` : undefined))
+        .orderBy(desc(ideas.id)).limit(limit + 1).all();
+    const items = rows.slice(0, limit);
+    return { items, nextAfter: rows.length > limit ? items.at(-1)?.id ?? null : null };
+}
+export async function assignBusinessOwner(actor, ideaId, businessOwnerId, idempotencyKey) {
+    const now = new Date();
+    return db.transaction((tx) => {
+        const role = assertActor(tx, actor, now);
+        if (role !== "admin" && role !== "maintainer")
+            throw new AuthorizationError("Only admins and maintainers can assign business owners.");
+        if (idempotencyKey && !/^[\x21-\x7e]{8,200}$/.test(idempotencyKey))
+            throw new AdminConflictError("A valid idempotency key is required.");
+        const idea = tx.select().from(ideas).where(eq(ideas.id, ideaId)).limit(1).get();
+        if (!idea || idea.status === "draft")
+            throw new AdminNotFoundError("Idea not found.");
+        if (idempotencyKey) {
+            const prior = tx.select().from(ideaEvents).where(and(eq(ideaEvents.ideaId, ideaId), eq(ideaEvents.correlationId, idempotencyKey))).limit(1).get();
+            if (prior) {
+                const metadata = parsed(prior.metadataJson);
+                if (prior.actorId !== actor.userId || !["assign_owner", "reassign_owner"].includes(metadata?.action ?? "") || metadata?.businessOwnerId !== businessOwnerId)
+                    throw new AdminConflictError("Idempotency key was used for a different request.");
+                return { ideaId, action: metadata.action, fromStatus: prior.fromStatus, toStatus: prior.toStatus, businessOwnerId };
+            }
+        }
+        const owner = tx.select({ id: users.id, role: users.role, isActive: users.isActive }).from(users).where(eq(users.id, businessOwnerId)).limit(1).get();
+        if (!owner?.isActive || owner.role !== "business_owner")
+            throw new AdminConflictError("Active business owner is required.");
+        const previousOwnerId = idea.assignedUserId;
+        if (previousOwnerId === businessOwnerId)
+            throw new AdminConflictError("Idea is already assigned to this business owner.");
+        const initialAssignment = previousOwnerId === null;
+        if (initialAssignment && !["owner_matching", "owner_assignment"].includes(idea.status))
+            throw new AdminConflictError("Only ideas awaiting owner assignment can receive an initial business owner.");
+        const from = idea.status;
+        const to = initialAssignment ? "business_review" : from;
+        const action = initialAssignment ? "assign_owner" : "reassign_owner";
+        const dueAt = initialAssignment ? new Date(now.getTime() + stageDays("business_review", tx) * 86_400_000) : idea.dueAt;
+        const changed = tx.update(ideas).set({ assignedUserId: businessOwnerId, status: to, dueAt, updatedAt: now })
+            .where(and(eq(ideas.id, ideaId), eq(ideas.status, from), previousOwnerId === null ? isNull(ideas.assignedUserId) : eq(ideas.assignedUserId, previousOwnerId))).run();
+        if (!changed.changes)
+            throw new AdminConflictError("Idea assignment changed; refresh and retry.");
+        const eventType = initialAssignment ? "business_owner_assigned" : "business_owner_reassigned";
+        tx.insert(ideaEvents).values({ ideaId, actorType: governanceEventActor(role), actorId: actor.userId, eventType, fromStatus: from, toStatus: to, correlationId: idempotencyKey ?? null, metadataJson: JSON.stringify({ action, previousOwnerId, businessOwnerId }) }).run();
+        tx.insert(auditEvents).values(buildAuditRecord({ actorUserId: actor.userId, sessionId: actor.sessionId, action: `admin.governance.owner_${initialAssignment ? "assigned" : "reassigned"}`, targetType: "idea", targetId: ideaId, reason: initialAssignment ? "Business owner assigned" : "Business owner reassigned", requiresReason: false, metadata: { previousOwnerId, businessOwnerId, fromStatus: from, toStatus: to }, ipAddress: actor.ipAddress, userAgent: actor.userAgent }, now)).run();
+        if (previousOwnerId !== null)
+            tx.insert(notifications).values({ userId: previousOwnerId, type: "idea_reassigned", title: "Idea reassigned", body: `${idea.reference} has been reassigned to another business owner.`, link: `/ideas/${ideaId}` }).run();
+        tx.insert(notifications).values({ userId: businessOwnerId, type: "idea_routed", title: initialAssignment ? "Idea assigned for delivery" : "Idea reassigned to you", body: `${idea.reference} is ready for your review.`, link: `/ideas/${ideaId}` }).run();
+        return { ideaId, action, fromStatus: from, toStatus: to, businessOwnerId };
+    });
+}
+export async function decideGovernance(actor, ideaId, action, reasonInput, idempotencyKey, controlName) {
     const now = new Date();
     return db.transaction((tx) => {
         const role = assertActor(tx, actor, now);
@@ -159,13 +220,15 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
         const snapshot = from === "control_review" || action === "approve" || action === "confirm" ? controlSnapshot(tx, ideaId) : null;
         const requiredNames = snapshot?.requiredControls ?? [];
         const priorControls = from === "control_review" || action === "confirm" ? approvedControls(tx, ideaId) : null;
-        if (["route", "reject", "defer", "accept", "confirm", "start_implementation", "mark_implemented"].includes(action) && role !== "back_office")
-            throw new AuthorizationError("Back-office workflow access required.");
-        if (["approve", "not_recommended"].includes(action) && ((from === "business_review" && role !== "business_owner") || (from === "control_review" && role !== "back_office")))
-            throw new AuthorizationError("Business owner or back-office approval is required.");
-        if (action === "return" && role !== "back_office" && role !== "business_owner")
-            throw new AuthorizationError("Back-office or business-owner access required.");
-        if (["approve", "not_recommended"].includes(action) && role === "business_owner" && assignedOwner(tx, ideaId) !== actor.userId)
+        const ownerActions = ["approve", "not_recommended", "confirm", "start_implementation", "mark_implemented"].includes(action);
+        const maintainerActions = ["accept", "reject", "defer"].includes(action) || (action === "return" && from === "screening");
+        if (ownerActions && role !== "business_owner")
+            throw new AuthorizationError("Business owner workflow access required.");
+        if (maintainerActions && role !== "admin" && role !== "maintainer")
+            throw new AuthorizationError("Maintainer review access required.");
+        if (action === "return" && !maintainerActions && role !== "business_owner")
+            throw new AuthorizationError("Only the assigned owner can return this idea at this stage.");
+        if (ownerActions && assignedOwner(tx, ideaId) !== actor.userId)
             throw new AdminNotFoundError("Idea not found.");
         if (action === "return" && role === "business_owner" && (from !== "business_review" || assignedOwner(tx, ideaId) !== actor.userId))
             throw new AdminNotFoundError("Idea not found.");
@@ -175,8 +238,7 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
             const prior = tx.select().from(ideaEvents).where(and(eq(ideaEvents.ideaId, ideaId), eq(ideaEvents.correlationId, idempotencyKey))).limit(1).get();
             if (prior) {
                 const metadata = parsed(prior.metadataJson);
-                const requestedDueAt = metadata && Object.hasOwn(metadata, "requestedDueAt") ? metadata.requestedDueAt : metadata?.dueAt;
-            if (prior.actorId !== actor.userId || metadata?.action !== action || (action === "route" && (metadata.businessOwnerId !== businessOwnerId || requestedDueAt !== (dueAt?.toISOString() ?? null))) || (action === "approve" && prior.fromStatus === "control_review" && metadata.controlName?.toLowerCase() !== (controlName ?? (requiredNames.length === 1 ? requiredNames[0] : undefined))?.toLowerCase()))
+                if (prior.actorId !== actor.userId || metadata?.action !== action || (action === "approve" && prior.fromStatus === "control_review" && metadata.controlName?.toLowerCase() !== (controlName ?? (requiredNames.length === 1 ? requiredNames[0] : undefined))?.toLowerCase()))
                     throw new AdminConflictError("Idempotency key was used for a different request.");
                 return { ideaId, action, fromStatus: prior.fromStatus, toStatus: prior.toStatus };
             }
@@ -188,17 +250,11 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
                 throw new AdminConflictError("Select a required control to approve.");
             if (priorControls?.names.has(approvedControlName.toLowerCase()))
                 throw new AdminConflictError("This control has already approved the idea.");
-            if (priorControls?.approvers.has(actor.userId))
-                throw new AdminConflictError("A different control reviewer must approve each required control.");
         }
         const controlsComplete = !requiredNames.length || requiredNames.every((name) => name === approvedControlName || priorControls?.names.has(name.toLowerCase()));
-        const targets = { route: "business_review", return: "returned", reject: "rejected", defer: "deferred", accept: "poc", approve: from === "control_review" ? controlsComplete ? "decision" : "control_review" : "decision", not_recommended: "rejected", confirm: "poc", start_implementation: "implementation", mark_implemented: "implemented" };
-        if (action === "route" && (from !== "screening" || !businessOwnerId))
-            throw new AdminConflictError("Only screening ideas can be routed to a business owner.");
+        const targets = { return: "returned", reject: "rejected", defer: "deferred", accept: "owner_matching", approve: from === "control_review" ? controlsComplete ? "decision" : "control_review" : "decision", not_recommended: "rejected", confirm: "poc", start_implementation: "implementation", mark_implemented: "implemented" };
         if (action === "accept" && from !== "screening")
-            throw new AdminConflictError("Direct acceptance is only available for ideas in screening.");
-        if (action === "route" && dueAt !== undefined && dueAt !== null && (!Number.isFinite(dueAt.getTime()) || dueAt.getTime() <= now.getTime() || dueAt.getTime() > now.getTime() + stageDays("business_review", tx) * 86_400_000))
-            throw new AdminConflictError("Owner due date must be within the business review SLA.");
+            throw new AdminConflictError("Only screening ideas can be accepted for owner matching.");
         if (["return", "reject", "defer"].includes(action) && from !== "screening" && !(action === "return" && role === "business_owner" && from === "business_review"))
             throw new AdminConflictError("This action is not available at this stage.");
         if (["approve", "not_recommended"].includes(action) && from !== "business_review" && from !== "control_review")
@@ -219,42 +275,37 @@ export async function decideGovernance(actor, ideaId, action, reasonInput, busin
             if (!types.has("business_owner_approved"))
                 throw new AdminConflictError("Business owner approval is required before confirmation.");
         }
-        if (action === "route") {
-            const owner = tx.select({ id: users.id, role: users.role, isActive: users.isActive }).from(users).where(eq(users.id, businessOwnerId)).limit(1).get();
-            if (!owner?.isActive || owner.role !== "business_owner")
-                throw new AdminConflictError("Active business owner is required.");
-        }
         const to = targets[action];
-        if (action !== "approve" && action !== "route" && action !== "not_recommended")
-            tx.update(ideas).set({ status: to, assignedUserId: action === "return" || action === "reject" || action === "defer" || action === "accept" ? null : idea.assignedUserId, dueAt: action === "accept" || action === "confirm" || action === "start_implementation" ? new Date(now.getTime() + stageDays(to) * 86_400_000) : null, updatedAt: now }).where(and(eq(ideas.id, ideaId), eq(ideas.status, from))).run();
-        if (action === "route") {
-            const effectiveDueAt = dueAt ?? new Date(now.getTime() + stageDays("business_review", tx) * 86_400_000);
-            tx.update(ideas).set({ status: to, assignedUserId: businessOwnerId, dueAt: effectiveDueAt, updatedAt: now }).where(and(eq(ideas.id, ideaId), eq(ideas.status, from))).run();
-            tx.insert(ideaEvents).values({ ideaId, actorType: "admin", actorId: actor.userId, eventType: "business_owner_routed", fromStatus: from, toStatus: to, correlationId: idempotencyKey ?? null, metadataJson: JSON.stringify({ businessOwnerId, dueAt: effectiveDueAt.toISOString(), requestedDueAt: dueAt?.toISOString() ?? null, reason, action }) }).run();
-            tx.insert(notifications).values({ userId: businessOwnerId, type: "idea_routed", title: "Idea routed for evaluation", body: `${idea.reference} is ready for your evaluation.`, link: `/ideas/${ideaId}` }).run();
+        if (action !== "approve" && action !== "not_recommended") {
+            tx.update(ideas).set({
+                status: to,
+                assignedUserId: action === "return" || action === "reject" || action === "defer" || action === "accept" ? null : idea.assignedUserId,
+                dueAt: action === "accept" || action === "confirm" || action === "start_implementation" ? new Date(now.getTime() + stageDays(to, tx) * 86_400_000) : null,
+                updatedAt: now,
+            }).where(and(eq(ideas.id, ideaId), eq(ideas.status, from))).run();
         }
         if (action === "approve" || action === "not_recommended") {
             tx.insert(ideaReviews).values({ ideaId, reviewerId: actor.userId, decision: action === "approve" ? "approved" : "rejected", reason }).run();
             const eventType = action !== "approve" ? from === "control_review" ? "control_not_recommended" : "business_owner_not_recommended" : from === "control_review" ? "control_approved" : "business_owner_approved";
-            tx.insert(ideaEvents).values({ ideaId, actorType: "admin", actorId: actor.userId, eventType, fromStatus: from, toStatus: to, correlationId: idempotencyKey ?? null, metadataJson: JSON.stringify({ reason, action, ...(eventType === "business_owner_approved" ? { requiresControlApproval, requiredControls: controlPolicy.controls } : {}), ...(approvedControlName ? { controlName: approvedControlName } : {}) }) }).run();
-            tx.update(ideas).set({ status: to, assignedUserId: null, dueAt: action === "approve" ? to === from ? idea.dueAt : new Date(now.getTime() + stageDays(to, tx) * 86_400_000) : null, updatedAt: now }).where(eq(ideas.id, ideaId)).run();
+            tx.insert(ideaEvents).values({ ideaId, actorType: governanceEventActor(role), actorId: actor.userId, eventType, fromStatus: from, toStatus: to, correlationId: idempotencyKey ?? null, metadataJson: JSON.stringify({ reason, action, ...(eventType === "business_owner_approved" ? { requiresControlApproval, requiredControls: controlPolicy.controls } : {}), ...(approvedControlName ? { controlName: approvedControlName } : {}) }) }).run();
+            tx.update(ideas).set({ status: to, assignedUserId: idea.assignedUserId, dueAt: action === "approve" ? to === from ? idea.dueAt : new Date(now.getTime() + stageDays(to, tx) * 86_400_000) : null, updatedAt: now }).where(eq(ideas.id, ideaId)).run();
             if (action === "approve" && to !== from)
                 tx.insert(notifications).values({ userId: idea.authorId, type: from === "control_review" ? "idea_control_approved" : "idea_owner_approved", title: from === "control_review" ? "Your idea passed control review" : "Your idea was approved by its business owner", body: `${idea.reference} moved to ${to === "decision" ? "transformation confirmation" : "control review"}.`, link: `/ideas/${ideaId}` }).run();
         }
         if (action === "accept") {
             tx.insert(ideaReviews).values({ ideaId, reviewerId: actor.userId, decision: "approved", reason }).run();
-            tx.insert(ideaEvents).values({ ideaId, actorType: "admin", actorId: actor.userId, eventType: "screening_accepted", fromStatus: from, toStatus: to, correlationId: idempotencyKey ?? null, metadataJson: JSON.stringify({ reason, action, approvalPath: "back_office_direct" }) }).run();
+            tx.insert(ideaEvents).values({ ideaId, actorType: governanceEventActor(role), actorId: actor.userId, eventType: "screening_accepted", fromStatus: from, toStatus: to, correlationId: idempotencyKey ?? null, metadataJson: JSON.stringify({ reason, action, approvalPath: role }) }).run();
         }
         if (["return", "reject", "defer"].includes(action))
             tx.insert(ideaReviews).values({ ideaId, reviewerId: actor.userId, decision: action === "return" ? "returned" : action === "reject" ? "rejected" : "deferred", reason }).run();
         if (["return", "reject", "defer", "confirm", "start_implementation", "mark_implemented"].includes(action)) {
-            tx.insert(ideaEvents).values({ ideaId, actorType: "admin", actorId: actor.userId, eventType: action === "confirm" ? "transformation_confirmed" : "status_changed", fromStatus: from, toStatus: to, correlationId: idempotencyKey ?? null, metadataJson: JSON.stringify({ reason, action }) }).run();
+            tx.insert(ideaEvents).values({ ideaId, actorType: governanceEventActor(role), actorId: actor.userId, eventType: action === "confirm" ? "transformation_confirmed" : "status_changed", fromStatus: from, toStatus: to, correlationId: idempotencyKey ?? null, metadataJson: JSON.stringify({ reason, action }) }).run();
         }
         if (action !== "approve") {
             const accepted = action === "accept" || action === "confirm";
-            tx.insert(notifications).values({ userId: idea.authorId, type: accepted ? "idea_accepted" : "idea_status_changed", title: accepted ? "Idea accepted for proof of concept" : "Idea workflow updated", body: accepted ? `Congratulations, ${idea.reference} has been accepted for proof of concept.` : `${idea.reference} moved from ${from} to ${to}.`, link: `/ideas/${ideaId}` }).run();
+            tx.insert(notifications).values({ userId: idea.authorId, type: accepted ? "idea_accepted" : "idea_status_changed", title: accepted ? action === "accept" ? "Idea accepted for owner matching" : "Idea accepted for proof of concept" : "Idea workflow updated", body: accepted ? action === "accept" ? `${idea.reference} was accepted and is being matched with a business owner.` : `Congratulations, ${idea.reference} has been accepted for proof of concept.` : `${idea.reference} moved from ${from} to ${to}.`, link: `/ideas/${ideaId}` }).run();
         }
-        tx.insert(auditEvents).values(buildAuditRecord({ actorUserId: actor.userId, sessionId: actor.sessionId, action: `admin.governance.${action}`, targetType: "idea", targetId: ideaId, reason, requiresReason: false, metadata: { fromStatus: from, toStatus: to, businessOwnerId: action === "route" ? businessOwnerId : null, controlName: approvedControlName ?? null, dueAt: action === "route" ? tx.select({ dueAt: ideas.dueAt }).from(ideas).where(eq(ideas.id, ideaId)).get()?.dueAt?.toISOString() ?? null : null }, ipAddress: actor.ipAddress, userAgent: actor.userAgent }, now)).run();
+        tx.insert(auditEvents).values(buildAuditRecord({ actorUserId: actor.userId, sessionId: actor.sessionId, action: `admin.governance.${action}`, targetType: "idea", targetId: ideaId, reason, requiresReason: false, metadata: { fromStatus: from, toStatus: to, controlName: approvedControlName ?? null }, ipAddress: actor.ipAddress, userAgent: actor.userAgent }, now)).run();
         return { ideaId, action, fromStatus: from, toStatus: to };
     });
 }

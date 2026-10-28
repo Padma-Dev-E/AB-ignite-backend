@@ -37,7 +37,7 @@ test("admin authoring creates immutable published quiz versions and replays the 
     .values({
       name: "Author",
       email: `author-${stamp}@example.test`,
-      role: "back_office",
+      role: "admin",
       passwordHash: "test",
     })
     .returning()
@@ -182,7 +182,7 @@ test("publishing rejects incomplete questions and challenge closure preserves pa
     .values({
       name: "Author",
       email: `author2-${stamp}@example.test`,
-      role: "back_office",
+      role: "admin",
       passwordHash: "test",
     })
     .returning()
@@ -341,7 +341,7 @@ test("question PATCH replays safely and rejects duplicate option keys or order",
     .values({
       name: "Question author",
       email: `question-author-${stamp}@example.test`,
-      role: "back_office",
+      role: "admin",
       passwordHash: "test",
     })
     .returning()
@@ -512,7 +512,7 @@ test("article create and PATCH require replay-safe idempotency and publish rejec
     .values({
       name: "Article author",
       email: `article-author-${stamp}@example.test`,
-      role: "back_office",
+      role: "admin",
       passwordHash: "test",
     })
     .returning()

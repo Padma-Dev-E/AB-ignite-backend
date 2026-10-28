@@ -7,7 +7,7 @@ import { getAdminSettings, updateAdminSettings } from "./service";
 
 test("admin policy settings include all supported workflow controls and persist them with an audit reason", async () => {
   const stamp = `${Date.now()}-${Math.random()}`;
-  const admin = db.insert(users).values({ name: "Settings admin", email: `settings-${stamp}@example.test`, role: "back_office", passwordHash: "test" }).returning().get();
+  const admin = db.insert(users).values({ name: "Settings admin", email: `settings-${stamp}@example.test`, role: "admin", passwordHash: "test" }).returning().get();
   const session = db.insert(refreshTokens).values({ userId: admin.id, tokenHash: `settings-${stamp}`, expiresAt: new Date(Date.now() + 60_000) }).returning().get();
   const actor = { userId: admin.id, sessionId: session.id, reason: "Approved policy review" };
   const priority = {
@@ -21,7 +21,7 @@ test("admin policy settings include all supported workflow controls and persist 
     required_controls: JSON.stringify(["risk review"]),
     departments: JSON.stringify(["Treasury", "Risk"]),
     demo_access: JSON.stringify({ enabled: false }),
-    roles: JSON.stringify(["employee", "business_owner", "back_office"]),
+    roles: JSON.stringify(["employee", "business_owner", "admin"]),
   };
   try {
     await updateAdminSettings(actor, { priority });
@@ -49,7 +49,7 @@ test("admin policy settings include all supported workflow controls and persist 
 
 test("admin policy validation rejects malformed bounded controls without writing settings", async () => {
   const stamp = `${Date.now()}-${Math.random()}`;
-  const admin = db.insert(users).values({ name: "Settings admin", email: `settings-invalid-${stamp}@example.test`, role: "back_office", passwordHash: "test" }).returning().get();
+  const admin = db.insert(users).values({ name: "Settings admin", email: `settings-invalid-${stamp}@example.test`, role: "admin", passwordHash: "test" }).returning().get();
   const session = db.insert(refreshTokens).values({ userId: admin.id, tokenHash: `settings-invalid-${stamp}`, expiresAt: new Date(Date.now() + 60_000) }).returning().get();
   try {
     await assert.rejects(updateAdminSettings({ userId: admin.id, sessionId: session.id, reason: "Invalid controls" }, { priority: { sla_days: JSON.stringify({ screening: 999 }) } }));

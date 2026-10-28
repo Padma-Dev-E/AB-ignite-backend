@@ -34,8 +34,8 @@ export async function getAdminSettings() {
 function assertActor(tx, actor, now) {
     const user = tx.select().from(users).where(eq(users.id, actor.userId)).limit(1).get();
     const session = tx.select().from(refreshTokens).where(eq(refreshTokens.id, actor.sessionId)).limit(1).get();
-    if (!user || user.role !== "back_office" || !user.isActive || !session || session.userId !== user.id || !isSessionActive(session, user, now))
-        throw new AuthorizationError("Back-office session is no longer valid.");
+    if (!user || user.role !== "admin" || !user.isActive || !session || session.userId !== user.id || !isSessionActive(session, user, now))
+        throw new AuthorizationError("Admin session is no longer valid.");
 }
 export async function updateAdminSettings(actor, input) {
     const reason = requirePrivilegedReason(actor.reason);

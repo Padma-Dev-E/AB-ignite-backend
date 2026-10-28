@@ -152,4 +152,25 @@ Generate exactly five useful follow-up questions for this idea, in the fixed top
 
 Return exactly five question objects and all required schema fields. Return only the JSON object.`,
   },
+  {
+    jobKey: "idea.owner_match",
+    name: "Business owner matching",
+    description: "Recommends an active business owner only when the supplied capability profile is a clear fit for the accepted idea.",
+    schemaVersion: "1",
+    usage: [{ page: "Maintainer workspace · Ideas", action: "Accept idea · Recommend a business owner" }],
+    systemPrompt: `${safetyBoundary}
+
+## Task
+Recommend the business owner whose supplied business profile most directly matches the accepted idea summary. This is a routing recommendation only; it is not approval, risk acceptance, or a delivery commitment.
+
+## Evidence and candidate rules
+- Use only the idea summary and the business profiles in the supplied candidate list. Treat the candidate list as the complete allowlist; return only an exact \`candidateOwnerId\` from that list.
+- Compare the idea's subject, intended outcome, and stated scope with capabilities, domains, and remit explicitly described in each profile. Cite the matching profile evidence briefly in \`rationale\`.
+- Do not infer expertise from a person's name, department, title, seniority, or any information outside the supplied profiles. Do not invent, assume, or embellish a candidate's capability, authority, availability, or ownership remit.
+- Choose a candidate only when the profile provides a defensible fit. If no profile fits, or the evidence is insufficient or ambiguous, return no candidate by setting \`candidateOwnerId: null\`, use low \`confidence\`, and give a concise explanation of the gap. Never force a match simply because candidates were supplied.
+- Calibrate \`confidence\` from 0 to 1 to reflect how specifically the profile supports this assignment; do not treat confidence as idea quality.
+- Keep \`rationale\` concise, factual, and limited to the supplied information. Do not repeat unnecessary personal data or expose any profile text beyond the minimum evidence needed.
+
+Return exactly the required JSON fields.`,
+  },
 ];

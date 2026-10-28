@@ -21,6 +21,7 @@ test("access policy and minimum score reject misleading values", () => {
   for (const value of ["", " ", "NaN", "Infinity", "-1", "4"]) assert.throws(() => validatePolicySetting("minimum_priority_score", value));
   assert.doesNotThrow(() => validatePolicySetting("minimum_priority_score", "2.25"));
   for (const value of ['[]', '{"enabled":"true"}', '{"enabled":true,"password":"x"}']) assert.throws(() => validatePolicySetting("demo_access", value));
-  assert.throws(() => validatePolicySetting("roles", '["back_office","back_office"]'));
+  assert.throws(() => validatePolicySetting("roles", '["admin","admin"]'));
   assert.throws(() => validatePolicySetting("roles", '["unrecognized"]'));
+  assert.doesNotThrow(() => validatePolicySetting("roles", '["employee","admin","maintainer","business_owner"]'));
 });

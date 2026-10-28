@@ -59,6 +59,7 @@ export function getAiConfig() {
         aiDebugRetentionHours: numberValue("AI_DEBUG_RETENTION_HOURS", 1, { min: 1, max: 24 }),
         timeoutMs: numberValue("AI_TIMEOUT_MS", DEFAULTS.timeoutMs, { min: 1_000 }, "GEMINI_TIMEOUT_MS"),
         maxAttempts: numberValue("AI_MAX_ATTEMPTS", DEFAULTS.maxAttempts, { min: 1, max: 10 }, "GEMINI_MAX_ATTEMPTS"),
+        ownerMatchMinimumConfidence: numberValue("AI_OWNER_MATCH_MIN_CONFIDENCE", 0.7, { integer: false, min: 0, max: 1 }),
         retryInitialDelayMs: numberValue("AI_RETRY_INITIAL_DELAY_MS", DEFAULTS.retryInitialDelayMs, { min: 0 }, "GEMINI_RETRY_INITIAL_DELAY_MS"),
         retryMaxDelayMs: numberValue("AI_RETRY_MAX_DELAY_MS", DEFAULTS.retryMaxDelayMs, { min: 0 }, "GEMINI_RETRY_MAX_DELAY_MS"),
         maxOutputTokens: numberValue("AI_MAX_OUTPUT_TOKENS", DEFAULTS.maxOutputTokens, { min: 1, max: 32_768 }, "GEMINI_MAX_OUTPUT_TOKENS"),

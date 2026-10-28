@@ -35,8 +35,8 @@ export async function registerAiTestRoutes(app: FastifyInstance) {
   app.post("/api/ai-test", async (request, reply) => {
     const actor = await app.requireActor(request, reply);
     if (!actor) return;
-    if (actor.role !== "back_office") {
-      return reply.code(403).send({ error: { name: "AuthorizationError", message: "A back-office account is required to send API test requests.", code: "FORBIDDEN" }, requestId: request.id });
+    if (actor.role !== "admin") {
+      return reply.code(403).send({ error: { name: "AuthorizationError", message: "An admin account is required to send API test requests.", code: "FORBIDDEN" }, requestId: request.id });
     }
     if (rateLimited(`${actor.userId}:${request.ip}`)) {
       return reply.code(429).send({ error: { name: "RateLimitError", message: "Too many test requests. Try again in a minute.", code: "RATE_LIMITED" }, requestId: request.id });

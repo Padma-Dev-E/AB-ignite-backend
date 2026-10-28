@@ -14,7 +14,7 @@ type AuditFilters = Page & { actorUserId?: number | null; action?: string | null
 
 const userFields = {
   id: users.id, name: users.name, email: users.email, role: users.role,
-  department: users.department, jobTitle: users.jobTitle, isActive: users.isActive,
+  department: users.department, jobTitle: users.jobTitle, businessProfile: users.businessProfile, isActive: users.isActive,
   mustChangePassword: users.mustChangePassword,
   failedLoginAttempts: users.failedLoginAttempts, lockedUntil: users.lockedUntil,
   lastLoginAt: users.lastLoginAt, lastSeenAt: users.lastSeenAt,
@@ -119,7 +119,7 @@ function assertActor(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], ac
     revokedAt: refreshTokens.revokedAt, idleExpiresAt: refreshTokens.idleExpiresAt,
     absoluteExpiresAt: refreshTokens.absoluteExpiresAt, sessionVersion: refreshTokens.sessionVersion })
     .from(refreshTokens).where(eq(refreshTokens.id, actor.sessionId)).limit(1).get();
-  if (!current || current.role !== "back_office" || !current.isActive || !session || session.userId !== current.id || session.expiresAt <= now || !isSessionActive(session, current, now)) {
+  if (!current || current.role !== "admin" || !current.isActive || !session || session.userId !== current.id || session.expiresAt <= now || !isSessionActive(session, current, now)) {
     throw new AuthorizationError("Administrator session is no longer valid.");
   }
 }
@@ -140,10 +140,10 @@ function mutateUser(actor: Actor, userId: number, reasonInput: unknown, action: 
     assertActor(tx, actor, now);
     const target = tx.select().from(users).where(eq(users.id, userId)).limit(1).get();
     if (!target) throw new AdminNotFoundError("User not found.");
-    if (action === "role" && !["employee", "back_office", "business_owner"].includes(value as string)) throw new AdminConflictError("Invalid role.");
+    if (action === "role" && !["employee", "admin", "maintainer", "business_owner"].includes(value as string)) throw new AdminConflictError("Invalid role.");
     if (action === "role") requireAllowedUserPolicy(tx, "roles", value as string);
     if (action === "active" && typeof value !== "boolean") throw new AdminConflictError("Invalid active state.");
-    if (userId === actor.userId && action !== "reset") throw new AdminConflictError("Back-office users cannot change their own role or active state.");
+    if (userId === actor.userId && action !== "reset") throw new AdminConflictError("Admins cannot change their own role or active state.");
     if (action === "role" && target.role === value) throw new AdminConflictError("Role is already set.");
     if (action === "active" && target.isActive === value) throw new AdminConflictError("Active state is already set.");
     if (action === "role") tx.update(users).set({ role: value as UserRole, sessionVersion: sql`${users.sessionVersion} + 1`, updatedAt: now }).where(eq(users.id, userId)).run();
@@ -173,7 +173,7 @@ export function resetUserSecurity(actor: Actor, userId: number, reason: unknown,
   return mutateUser(actor, userId, reason, "reset", undefined, metadata);
 }
 
-export async function createUser(actor: Actor, input: { name: string; email: string; department: string; jobTitle?: string; role: UserRole }, reasonInput: unknown, metadata?: { ipAddress?: string | null; userAgent?: string | null }) {
+export async function createUser(actor: Actor, input: { name: string; email: string; department: string; jobTitle?: string; role: UserRole; businessProfile?: string }, reasonInput: unknown, metadata?: { ipAddress?: string | null; userAgent?: string | null }) {
   const reason = requirePrivilegedReason(reasonInput);
   const now = new Date();
   // Administrators deliver this one-time credential through an approved bank channel.
@@ -184,7 +184,8 @@ export async function createUser(actor: Actor, input: { name: string; email: str
       assertActor(tx, actor, now);
       requireAllowedUserPolicy(tx, "roles", input.role);
       requireAllowedUserPolicy(tx, "departments", input.department.trim());
-      const created = tx.insert(users).values({ name: input.name.trim(), email: input.email.trim().toLowerCase(), department: input.department.trim(), jobTitle: input.jobTitle?.trim() || null, role: input.role, passwordHash, mustChangePassword: true, createdAt: now, updatedAt: now }).returning(userFields).get();
+      if (input.businessProfile && input.role !== "business_owner") throw new AdminConflictError("Business profile is only available for business owners.");
+      const created = tx.insert(users).values({ name: input.name.trim(), email: input.email.trim().toLowerCase(), department: input.department.trim(), jobTitle: input.jobTitle?.trim() || null, businessProfile: input.businessProfile?.trim() || null, role: input.role, passwordHash, mustChangePassword: true, createdAt: now, updatedAt: now }).returning(userFields).get();
       tx.insert(auditEvents).values(buildAuditRecord({ actorUserId: actor.userId, sessionId: actor.sessionId, action: "admin.user.created", targetType: "user", targetId: created.id, reason, requiresReason: true, metadata: { role: created.role }, ...metadata }, now)).run();
       return created;
     });

@@ -36,6 +36,7 @@ import { awardPoints } from "../rewards/service";
 import { appendAuditEvent } from "../audit/service";
 import { defaultPriorityPolicy, resolvePriorityPolicy, scorePriority, type PriorityMetrics } from "./priority-policy";
 import { IDEA_VALIDATION_PASS_SCORE, ideaValidationPasses, normalizeIdeaValidationScore } from "./validation-score";
+import { completeOwnerMatchTx, failOwnerMatchTx } from "../ai/owner-match-workflow";
 
 export type CreateIdeaVersionInput = NewIdeaVersion;
 
@@ -320,6 +321,7 @@ export async function recoverStaleAiRuns(now = new Date(), staleAfterMs = 120_00
       appendAiRunEventRecord(tx, run, exhausted ? "failed" : "retry", exhausted
         ? { attempt: run.attemptCount, errorCode: "timeout" }
         : { attempt: run.attemptCount, errorCode: "timeout", retryAt: now.toISOString() }, now);
+    if (exhausted) failOwnerMatchTx(tx, run, "owner_match_lease_expired", now);
       recovered++;
     }
     return recovered;
@@ -372,6 +374,7 @@ export async function completeAiRun(runId: number, result: AiRunResultInput, com
     }).run();
     appendAiRunEventRecord(tx, run, "succeeded", { attempt: run.attemptCount }, now);
     if (completionEvent) tx.insert(ideaEvents).values({ ...completionEvent, ideaId: run.ideaId }).run();
+    completeOwnerMatchTx(tx, run, result.resultJson, now);
   });
 }
 
@@ -394,6 +397,7 @@ export async function failAiRun(runId: number, failure: AiRunFailureInput): Prom
     // abort this transaction and leave a terminal run stuck in `running`.
     const eventErrorCode = safeAiRunEventErrorCodeSchema.safeParse(failure.errorCode);
     appendAiRunEventRecord(tx, run, "failed", { attempt: run.attemptCount, errorCode: eventErrorCode.success ? eventErrorCode.data : "unknown" }, now);
+    failOwnerMatchTx(tx, run, failure.errorCode ?? "owner_match_failed", now);
   });
 }
 
@@ -431,7 +435,7 @@ export async function recordHumanReview(input: CreateIdeaReviewInput): Promise<I
 }
 
 type IdeaSnapshotActor = AiActor | {
-  kind: "employee" | "back_office" | "business_owner";
+  kind: "employee" | "admin" | "maintainer" | "business_owner";
   id: string;
 };
 
@@ -440,9 +444,9 @@ export async function getAuthorizedIdeaSnapshot(actor: IdeaSnapshotActor, ideaId
   if (!idea) return null;
   // Auth sessions carry the account role, while older AI workflow callers use
   // the generic "user" / "admin" actor kinds. Treat regular account roles as
-  // user actors here and keep the owner check in force. Back-office and the
+  // user actors here and keep the owner check in force. Admin/maintainer and the
   // legacy admin actor retain their operational access.
-  const canViewAnyIdea = actor.kind === "admin" || actor.kind === "back_office";
+  const canViewAnyIdea = actor.kind === "admin" || actor.kind === "maintainer";
   const isUserActor = actor.kind === "user" || actor.kind === "employee" || actor.kind === "business_owner";
   if (!canViewAnyIdea && !isUserActor) return null;
   if (!canViewAnyIdea && Number(actor.id) !== idea.authorId) return null;

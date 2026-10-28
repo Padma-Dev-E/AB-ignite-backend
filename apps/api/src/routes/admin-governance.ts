@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "../../../../src/db/connection.js";
 import { aiRuns } from "../../../../src/db/schema.js";
 import { getAiConfig } from "../../../../src/lib/ai/config-core.js";
+import { queueOwnerMatchForIdea, requireManualOwnerAssignment } from "../../../../src/lib/ai/owner-match-workflow.js";
 import { listAiDebugExchangesForIdea } from "../../../../src/lib/ai/debug-exchanges.js";
 import { AuthorizationError, assertCapability, loadAuthorizationContext } from "../../../../src/lib/auth/authorization.js";
 import { CAPABILITIES } from "../../../../src/lib/auth/permissions.js";
@@ -34,10 +35,12 @@ import {
   setUserActive,
 } from "../../../../src/lib/admin/service.js";
 import {
+  assignBusinessOwner,
   decideGovernance,
   getEvaluation,
   listBusinessOwners,
   listDeliveryQueue,
+  listGovernanceIdeas,
   listRoutedEvaluations,
   listScreeningQueue,
   listTransformationQueue,
@@ -140,20 +143,20 @@ const createUserSchema = z.strictObject({
   email: z.email().max(254),
   department: z.string().trim().min(1).max(120),
   jobTitle: z.string().trim().max(120).optional(),
-  role: z.enum(["employee", "back_office", "business_owner"]),
+  businessProfile: z.string().trim().max(2000).optional(),
+  role: z.enum(["employee", "admin", "maintainer", "business_owner"]),
   reason: z.unknown(),
 });
 const reasonSchema = z.strictObject({ reason: z.unknown() });
-const roleSchema = z.strictObject({ role: z.enum(["employee", "back_office", "business_owner"]), reason: z.unknown() });
+const roleSchema = z.strictObject({ role: z.enum(["employee", "admin", "maintainer", "business_owner"]), reason: z.unknown() });
 const activationSchema = z.strictObject({ active: z.boolean(), reason: z.unknown() });
 const decisionSchema = z.strictObject({
-  action: z.enum(["route", "return", "reject", "defer", "accept", "approve", "not_recommended", "confirm", "start_implementation", "mark_implemented"]),
+  action: z.enum(["return", "reject", "defer", "accept", "approve", "not_recommended", "confirm", "start_implementation", "mark_implemented"]),
   reason: z.string().trim().max(500).optional(),
-  businessOwnerId: z.number().int().positive().optional(),
-  dueAt: z.iso.datetime({ offset: true }).nullable().optional(),
   controlName: z.string().trim().min(1).max(500).optional(),
 });
 const feedbackResponseSchema = z.object({ response: z.string().trim().min(1).max(2000) });
+const ownerAssignmentSchema = z.strictObject({ businessOwnerId: z.number().int().positive() });
 
 export async function registerAdminGovernanceRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/admin/analytics", route(async (request, reply) => {
@@ -249,7 +252,7 @@ export async function registerAdminGovernanceRoutes(app: FastifyInstance): Promi
   app.get("/api/admin/ai/runs", route(async (request, reply) => {
     const actor = await app.requireActor(request, reply);
     if (!actor) return;
-    if (actor.role !== "back_office") return sendError(reply, request, "forbidden", "Administrator access required.", 403);
+    if (actor.role !== "admin") return sendError(reply, request, "forbidden", "Administrator access required.", 403);
     const runs = db.select({
       id: aiRuns.id, ideaId: aiRuns.ideaId, jobKey: aiRuns.jobKey, jobVersion: aiRuns.jobVersion, model: aiRuns.model,
       status: aiRuns.status, attemptCount: aiRuns.attemptCount, errorCode: aiRuns.errorCode, createdAt: aiRuns.createdAt,
@@ -276,7 +279,7 @@ export async function registerAdminGovernanceRoutes(app: FastifyInstance): Promi
   app.get("/api/admin/governance/evaluations/:ideaId/ai-diagnostics", route(async (request, reply) => {
     const actor = await authorizedActor(app, request, reply, CAPABILITIES.GOVERNANCE_READ);
     if (!actor) return;
-    await requireGovernanceRole({ userId: actor.userId, sessionId: actor.sessionId }, ["back_office"]);
+    await requireGovernanceRole({ userId: actor.userId, sessionId: actor.sessionId }, ["admin"]);
     const config = getAiConfig();
     reply.header("cache-control", "private, no-store, max-age=0");
     if (!config.aiDebugPayloads) return sendEnvelope(reply, request, { enabled: false, retentionHours: config.aiDebugRetentionHours, exchanges: [] });
@@ -291,12 +294,33 @@ export async function registerAdminGovernanceRoutes(app: FastifyInstance): Promi
     const actor = await authorizedActor(app, request, reply, CAPABILITIES.GOVERNANCE_MANAGE);
     if (!actor) return;
     const body = decisionSchema.parse(request.body);
-    const dueAt = typeof body.dueAt === "string" ? new Date(body.dueAt) : body.dueAt;
+    const ideaId = positiveId(params(request).ideaId);
+    const governanceActor = { userId: actor.userId, sessionId: actor.sessionId, ipAddress: request.ip ?? null, userAgent: request.headers["user-agent"] ?? null };
     const data = await decideGovernance(
-      { userId: actor.userId, sessionId: actor.sessionId, ipAddress: request.ip ?? null, userAgent: request.headers["user-agent"] ?? null },
-      positiveId(params(request).ideaId), body.action, body.reason, body.businessOwnerId, dueAt,
+      governanceActor,
+      ideaId, body.action, body.reason,
       typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : undefined,
       body.controlName,
+    );
+    if (body.action !== "accept") return sendEnvelope(reply, request, data);
+    let ownerMatch: Awaited<ReturnType<typeof queueOwnerMatchForIdea>>;
+    try {
+      ownerMatch = await queueOwnerMatchForIdea(ideaId, actor.userId, request.id);
+    } catch {
+      await requireManualOwnerAssignment(ideaId, "owner_match_queue_failed");
+      ownerMatch = { status: "manual_assignment_required" };
+    }
+    return sendEnvelope(reply, request, { ...data, ownerMatch });
+  }));
+
+  app.post("/api/admin/governance/ideas/:ideaId/owner-assignment", route(async (request, reply) => {
+    const actor = await authorizedActor(app, request, reply, CAPABILITIES.GOVERNANCE_MANAGE);
+    if (!actor) return;
+    const { businessOwnerId } = ownerAssignmentSchema.parse(request.body);
+    const data = await assignBusinessOwner(
+      { userId: actor.userId, sessionId: actor.sessionId, ipAddress: request.ip ?? null, userAgent: request.headers["user-agent"] ?? null },
+      positiveId(params(request).ideaId), businessOwnerId,
+      typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : undefined,
     );
     return sendEnvelope(reply, request, data);
   }));
@@ -312,17 +336,17 @@ export async function registerAdminGovernanceRoutes(app: FastifyInstance): Promi
   app.get("/api/admin/governance/queues/screening", route(async (request, reply) => {
     const actor = await authorizedActor(app, request, reply, CAPABILITIES.GOVERNANCE_READ);
     if (!actor) return;
-    await requireGovernanceRole({ userId: actor.userId, sessionId: actor.sessionId }, ["back_office"]);
+    await requireGovernanceRole({ userId: actor.userId, sessionId: actor.sessionId }, ["admin", "maintainer"]);
     const page = parsePage(requestUrl(request), 100);
-    return sendEnvelope(reply, request, await listScreeningQueue(page.limit, page.after));
+    return sendEnvelope(reply, request, await listScreeningQueue({ userId: actor.userId, sessionId: actor.sessionId }, page.limit, page.after));
   }));
 
   app.get("/api/admin/governance/queues/transformation", route(async (request, reply) => {
     const actor = await authorizedActor(app, request, reply, CAPABILITIES.GOVERNANCE_READ);
     if (!actor) return;
-    await requireGovernanceRole({ userId: actor.userId, sessionId: actor.sessionId }, ["back_office"]);
+    await requireGovernanceRole({ userId: actor.userId, sessionId: actor.sessionId }, ["admin", "maintainer"]);
     const page = parsePage(requestUrl(request), 100);
-    return sendEnvelope(reply, request, await listTransformationQueue(page.limit, page.after));
+    return sendEnvelope(reply, request, await listTransformationQueue({ userId: actor.userId, sessionId: actor.sessionId }, page.limit, page.after));
   }));
 
   app.get("/api/admin/governance/queues/delivery", route(async (request, reply) => {
@@ -330,6 +354,13 @@ export async function registerAdminGovernanceRoutes(app: FastifyInstance): Promi
     if (!actor) return;
     const page = parsePage(requestUrl(request), 10);
     return sendEnvelope(reply, request, await listDeliveryQueue({ userId: actor.userId, sessionId: actor.sessionId }, page.limit, page.after));
+  }));
+
+  app.get("/api/admin/governance/queues/progress", route(async (request, reply) => {
+    const actor = await authorizedActor(app, request, reply, CAPABILITIES.GOVERNANCE_READ);
+    if (!actor) return;
+    const page = parsePage(requestUrl(request), 100);
+    return sendEnvelope(reply, request, await listGovernanceIdeas({ userId: actor.userId, sessionId: actor.sessionId }, page.limit, page.after));
   }));
 
   app.get("/api/admin/ideas/export", route(async (request, reply) => {

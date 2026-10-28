@@ -5,7 +5,7 @@ import { db } from "../../../db/connection";
 import { announcements, auditEvents, feedbackCampaigns, notifications, refreshTokens, users } from "../../../db/schema";
 import { createAnnouncement, setAnnouncementPinned, setCampaignActive } from "./service";
 
-function principal(role: "back_office" | "employee" | "business_owner" = "back_office") {
+function principal(role: "admin" | "employee" | "business_owner" = "admin") {
   const stamp = `${Date.now()}-${Math.random()}`;
   const user = db.insert(users).values({ name: "Engagement actor", email: `eng-${stamp}@example.test`, role, passwordHash: "test" }).returning({ id: users.id }).get();
   const session = db.insert(refreshTokens).values({ userId: user.id, tokenHash: `eng-${stamp}`, expiresAt: new Date(Date.now() + 60_000), sessionVersion: 0 }).returning({ id: refreshTokens.id }).get();

@@ -113,7 +113,7 @@ function authorized(tx: Tx, actor: Actor, now: Date) {
     .get();
   if (
     !user ||
-    user.role !== "back_office" ||
+    user.role !== "admin" ||
     !user.isActive ||
     !session ||
     session.userId !== user.id ||

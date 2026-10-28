@@ -77,7 +77,7 @@ function authorized(tx, actor, now) {
         .where(eq(refreshTokens.id, actor.sessionId))
         .get();
     if (!user ||
-        user.role !== "back_office" ||
+        user.role !== "admin" ||
         !user.isActive ||
         !session ||
         session.userId !== user.id ||

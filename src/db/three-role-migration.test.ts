@@ -41,3 +41,36 @@ test("three-role migration maps legacy accounts, drops profiles and revokes old 
     sqlite.close();
   }
 });
+
+test("maintainer migration preserves ideas and assignments while mapping back-office accounts to admin", async () => {
+  const migration = await readFile(new URL("../../drizzle/0027_maintainer_owner_match.sql", import.meta.url), "utf8");
+  const sqlite = new Database(":memory:");
+  try {
+    sqlite.exec(`
+      CREATE TABLE users (id INTEGER PRIMARY KEY, role TEXT NOT NULL, sessionVersion INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE refresh_tokens (id INTEGER PRIMARY KEY, userId INTEGER NOT NULL, revokedAt INTEGER, revocationReason TEXT);
+      CREATE TABLE ideas (id INTEGER PRIMARY KEY, status TEXT NOT NULL, assignedUserId INTEGER);
+      CREATE TABLE idea_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO users (id,role) VALUES (1,'back_office'),(2,'employee'),(3,'business_owner');
+      INSERT INTO refresh_tokens (id,userId) VALUES (11,1),(12,2),(13,3);
+      INSERT INTO ideas (id,status,assignedUserId) VALUES (21,'screening',NULL),(22,'business_review',3);
+      INSERT INTO idea_settings (key,value) VALUES ('roles','["back_office","business_owner","employee"]');
+    `);
+    sqlite.exec(migration);
+    assert.deepEqual(sqlite.prepare("SELECT id, role, sessionVersion FROM users ORDER BY id").all(), [
+      { id: 1, role: "admin", sessionVersion: 1 },
+      { id: 2, role: "employee", sessionVersion: 0 },
+      { id: 3, role: "business_owner", sessionVersion: 0 },
+    ]);
+    assert.deepEqual(sqlite.prepare("SELECT id, status, assignedUserId FROM ideas ORDER BY id").all(), [
+      { id: 21, status: "screening", assignedUserId: null },
+      { id: 22, status: "business_review", assignedUserId: 3 },
+    ]);
+    assert.equal(sqlite.prepare("SELECT revokedAt IS NOT NULL AS revoked, revocationReason FROM refresh_tokens WHERE id=11").get()?.revoked, 1);
+    assert.equal(sqlite.prepare("SELECT revokedAt FROM refresh_tokens WHERE id=12").get()?.revokedAt, null);
+    assert.deepEqual(sqlite.prepare("PRAGMA table_info(users)").all().some((column) => (column as { name: string }).name === "businessProfile"), true);
+    assert.equal(sqlite.prepare("SELECT value FROM idea_settings WHERE key='roles'").get()?.value, '["admin","business_owner","employee","maintainer"]');
+  } finally {
+    sqlite.close();
+  }
+});

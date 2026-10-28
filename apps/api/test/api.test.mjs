@@ -11,6 +11,9 @@ process.env.API_ALLOWED_ORIGINS = "https://app.example.test,http://127.0.0.1:310
 
 let app;
 before(async () => {
+  const { db } = await import("../../../src/db/connection.js");
+  const { migrate } = await import("drizzle-orm/better-sqlite3/migrator");
+  migrate(db, { migrationsFolder: path.resolve("drizzle") });
   const { buildApi } = await import("../src/app.ts");
   app = await buildApi();
 });
@@ -106,6 +109,54 @@ test("password changes accept the configured frontend origin through the API pro
   assert.deepEqual(response.json().data, { changed: true, sessionsRevoked: true });
 });
 
+test("AI activity and diagnostics are admin-only and legacy idea AI status is unavailable", async () => {
+  const [{ db }, { users, refreshTokens }, { encode }, { SESSION_COOKIE_NAME }] = await Promise.all([
+    import("../../../src/db/connection.js"),
+    import("../../../src/db/schema.js"),
+    import("next-auth/jwt"),
+    import("../../../src/auth/config.js"),
+  ]);
+  const cookieForRole = async (role) => {
+    const user = db.insert(users).values({
+      name: `AI Activity ${role} Access Test`,
+      email: `ai-activity-${role}-${process.pid}@example.test`,
+      department: "QA",
+      role,
+      passwordHash: "unused-test-hash",
+    }).returning().get();
+    const now = new Date();
+    const session = db.insert(refreshTokens).values({
+      userId: user.id,
+      tokenHash: `ai-activity-${role}-${process.pid}`,
+      expiresAt: new Date(now.getTime() + 60_000),
+      idleExpiresAt: new Date(now.getTime() + 60_000),
+      absoluteExpiresAt: new Date(now.getTime() + 60_000),
+      sessionVersion: user.sessionVersion,
+    }).returning().get();
+    const value = await encode({
+      secret: process.env.AUTH_SECRET,
+      salt: SESSION_COOKIE_NAME,
+      maxAge: 60,
+      token: { sub: String(user.id), sessionId: String(session.id), sessionVersion: user.sessionVersion },
+    });
+    return { cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(value)}` };
+  };
+  const employeeHeaders = await cookieForRole("employee");
+  const adminHeaders = await cookieForRole("admin");
+
+  const runs = await app.inject({ method: "GET", url: "/api/admin/ai/runs", headers: employeeHeaders });
+  const diagnostics = await app.inject({ method: "GET", url: "/api/admin/governance/evaluations/1/ai-diagnostics", headers: employeeHeaders });
+  const legacyStatus = await app.inject({ method: "GET", url: "/api/ideas/1/ai-status", headers: employeeHeaders });
+  const adminRuns = await app.inject({ method: "GET", url: "/api/admin/ai/runs", headers: adminHeaders });
+  const adminDiagnostics = await app.inject({ method: "GET", url: "/api/admin/governance/evaluations/1/ai-diagnostics", headers: adminHeaders });
+
+  assert.equal(runs.statusCode, 403);
+  assert.equal(diagnostics.statusCode, 403);
+  assert.equal(legacyStatus.statusCode, 404);
+  assert.equal(adminRuns.statusCode, 200);
+  assert.equal(adminDiagnostics.statusCode, 200);
+});
+
 test("Auth.js refresh failures preserve their non-envelope compatibility shape", async () => {
   const response = await app.inject({ method: "POST", url: "/api/auth/refresh" });
   assert.equal(response.statusCode, 401);
@@ -142,5 +193,5 @@ test("every Fastify route module is registered in the backend app", async () => 
     assert.ok(appSource.includes(`import { ${registration} } from "./${relative}"`));
     assert.ok(appSource.includes(`await ${registration}(app)`));
   }
-  assert.equal(expected.length, 8);
+  assert.equal(expected.length, 10);
 });

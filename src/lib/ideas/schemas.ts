@@ -49,7 +49,7 @@ export const IdeaListQuerySchema = z.strictObject({
   pageSize: paginationNumber(20, 50),
   search: z.string().trim().max(120).optional(),
   category: z.string().trim().min(1).max(120).optional(),
-  status: z.enum(["screening", "returned", "business_review", "control_review", "decision", "poc", "implementation", "implemented", "rejected", "deferred"]).optional(),
+  status: z.enum(["screening", "returned", "owner_matching", "owner_assignment", "business_review", "control_review", "decision", "poc", "implementation", "implemented", "rejected", "deferred"]).optional(),
   mine: z.preprocess((value) => {
     if (value === undefined || value === "") return undefined;
     if (value === true || value === "true") return true;
@@ -117,7 +117,7 @@ export const CommentListQuerySchema = z.strictObject({
 export type CommentListQuery = z.infer<typeof CommentListQuerySchema>;
 
 const boundedText = (max: number) => z.string().trim().min(1).max(max);
-const ideaStatusSchema = z.enum(["screening", "returned", "business_review", "control_review", "decision", "poc", "implementation", "implemented", "rejected", "deferred"]);
+const ideaStatusSchema = z.enum(["screening", "returned", "owner_matching", "owner_assignment", "business_review", "control_review", "decision", "poc", "implementation", "implemented", "rejected", "deferred"]);
 
 export const IdeaAnalysisInputSchema = IdeaInputSchema.extend({
   reference: boundedText(120).optional(),

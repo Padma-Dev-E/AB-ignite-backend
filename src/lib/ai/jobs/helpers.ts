@@ -45,7 +45,7 @@ export const jsonImpact: JsonSchema = {
 };
 export const jsonNextAction: JsonSchema = {
   type: "object",
-  properties: { action: { type: "string" }, ownerRole: { type: "string", enum: ["author", "business_owner", "back_office", "delivery"] }, priority: { type: "string", enum: ["low", "medium", "high"] }, dueInDays: { type: "integer", minimum: 0, maximum: 365 } },
+  properties: { action: { type: "string" }, ownerRole: { type: "string", enum: ["author", "business_owner", "admin", "delivery"] }, priority: { type: "string", enum: ["low", "medium", "high"] }, dueInDays: { type: "integer", minimum: 0, maximum: 365 } },
   required: ["action", "ownerRole", "priority"],
 };
 export const jsonMetric: JsonSchema = {

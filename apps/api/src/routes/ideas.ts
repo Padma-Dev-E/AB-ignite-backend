@@ -94,7 +94,7 @@ function actorFor(actor: ApiActor) {
 }
 
 function screeningActor(actor: ApiActor) {
-  return { kind: actor.role === "back_office" ? "admin" as const : "user" as const, id: String(actor.userId) };
+  return { kind: actor.role === "admin" || actor.role === "maintainer" ? "admin" as const : "user" as const, id: String(actor.userId) };
 }
 
 function snapshotActor(actor: ApiActor) {
@@ -157,7 +157,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
   app.patch("/api/ideas/settings", async (request, reply) => {
     const actor = await requireActor(app, request, reply);
     if (!actor) return;
-    if (actor.role !== "back_office") return sendError(reply, request, "forbidden", "Administrator access required.", 403);
+    if (actor.role !== "admin") return sendError(reply, request, "forbidden", "Administrator access required.", 403);
     try {
       const { minimumScore } = settingsSchema.parse(request.body);
       await setIdeaMinimumScore({ kind: "admin", id: String(actor.userId) }, minimumScore);
@@ -227,7 +227,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
         if (!createdIdea) throw new Error("Idea was not created");
         const [createdVersion] = tx.insert(ideaVersions).values({ ...ideaInput, ideaId: createdIdea.id, authorId: actor.userId, version: 1, contentHash }).returning().all();
         if (!createdVersion) throw new Error("Idea version was not created");
-        tx.insert(ideaEvents).values({ ideaId: createdIdea.id, ideaVersionId: createdVersion.id, actorType: actor.role === "back_office" ? "admin" : "user", actorId: actor.userId, eventType: "created", correlationId: requestId }).run();
+        tx.insert(ideaEvents).values({ ideaId: createdIdea.id, ideaVersionId: createdVersion.id, actorType: actor.role === "admin" ? "admin" : "user", actorId: actor.userId, eventType: "created", correlationId: requestId }).run();
         if (answers && metrics) tx.insert(ideaSubmissions).values({ ideaId: createdIdea.id, answersJson: JSON.stringify(answers), metricsJson: JSON.stringify(metrics), score: priority!.score, minimumScore, differentiation: differentiation ?? null }).run();
         if (selectedOriginal) tx.insert(notifications).values({ userId: selectedOriginal.idea.authorId, type: "idea_builds_on", title: "A colleague built on your idea", body: `${selectedOriginal.idea.reference} has been used as the basis for a related idea.`, link: `/ideas/${selectedOriginal.idea.id}` }).run();
         return { idea: createdIdea, version: createdVersion };
@@ -256,7 +256,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       // match saved enrichment/question/validation runs to this exact version.
       // Keep it scoped to the draft owner; public idea details do not need it.
       let versionId: number | undefined;
-      let pendingSubmission: { status: "queued" | "running" | "succeeded"; submitForHumanReview: boolean } | undefined;
+      let pendingSubmission: { submitForHumanReview: boolean } | undefined;
       if (idea.status === "draft" && idea.authorId === actor.userId) {
         const snapshot = await getAuthorizedIdeaSnapshot({ kind: "user", id: String(actor.userId) }, ideaId);
         const versions = snapshot?.versions ?? [];
@@ -287,7 +287,6 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
               currentScore = normalizeIdeaValidationScore(JSON.parse(currentValidation?.resultJson ?? "{}").overallScore);
             } catch { /* Corrupt validation output cannot authorize human-review routing. */ }
             pendingSubmission = {
-              status: latestPreflight.status as "queued" | "running" | "succeeded",
               submitForHumanReview: currentScore !== null && currentScore <= IDEA_VALIDATION_PASS_SCORE && lowValidationCount >= 2,
             };
           }
@@ -359,7 +358,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
     if (!ideaId) return sendError(reply, request, "validation_error", "Invalid idea ID.", 400);
     try {
       const current = await getIdeaById(ideaId);
-      if (!current || (actor.role !== "back_office" && current.authorId !== actor.userId)) return sendError(reply, request, "not_found", "Idea not found.", 404);
+      if (!current || (!(["admin", "maintainer"] as string[]).includes(actor.role) && current.authorId !== actor.userId)) return sendError(reply, request, "not_found", "Idea not found.", 404);
       if (current.status !== "returned") return sendError(reply, request, "conflict", "Only returned ideas can be edited.", 409);
       const input = IdeaUpdateSchema.parse(request.body);
       return sendEnvelope(reply, request, await updateReturnedIdea(actorFor(actor), ideaId, input));
@@ -406,8 +405,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       if (!latestPreflight || latestPreflight.status !== "succeeded") {
         const idempotencyKey = `idea:${ideaId}:version:${version.id}:idea.preflight:v1`;
         await runIdeaScreeningWorkflow(ideaId, version.id, screeningActor(actor), idempotencyKey);
-        const run = await getIdeaVersionPreflight(ideaId, version.id);
-        return sendEnvelope(reply, request, { ideaId, versionId: version.id, runId: run?.id ?? null, status: run?.status ?? "queued", submitted: false }, 202);
+        return sendEnvelope(reply, request, { ideaId, versionId: version.id, submitted: false }, 202);
       }
       let preflight: { decision?: string; safeToProcess?: boolean } = {};
       try { preflight = JSON.parse(latestPreflight.resultJson ?? "{}"); } catch { /* Invalid stored output fails closed. */ }
@@ -443,15 +441,12 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
         return {
           id: run.id,
           jobKey: run.jobKey,
-          status: run.status,
+          pending: run.status === "queued" || run.status === "running",
+          completed: run.status === "succeeded",
+          failed: ["failed", "timed_out", "cancelled"].includes(run.status),
           ideaVersionId: run.ideaVersionId,
           result,
-          // The AI runner redacts provider details before persisting these.
-          // Return only that safe message so failures are actionable in the UI.
-          errorCode: run.errorCode,
-          errorMessage: run.errorMessage,
-          createdAt: run.createdAt,
-          completedAt: run.completedAt,
+          errorMessage: ["failed", "timed_out", "cancelled"].includes(run.status) ? run.errorMessage : null,
         };
       }) });
     } catch (error) {
@@ -497,15 +492,15 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       // are used when a job has evolved (for example, idea.validate v2).
       const job = getAiJob(jobKey);
       const promptVersion = getActiveAiPromptVersion(job.key);
-      if (!promptVersion) return sendError(reply, request, "provider_unavailable", "The active AI prompt is not configured. Contact back-office support.", 503);
+      if (!promptVersion) return sendError(reply, request, "provider_unavailable", "The active AI prompt is not configured. Contact an admin.", 503);
       const allPrevious = snapshot.runs.filter((candidate) => candidate.ideaVersionId === version.id && candidate.jobKey === job.key && candidate.jobVersion === job.version).sort((a, b) => b.id - a.id);
       const latestActive = allPrevious.find((candidate) => candidate.status === "queued" || candidate.status === "running");
-      if (latestActive) return sendEnvelope(reply, request, { runId: latestActive.id, status: latestActive.status, versionId: version.id });
+      if (latestActive) return sendEnvelope(reply, request, { runId: latestActive.id, pending: true, versionId: version.id });
       const previous = allPrevious.filter((candidate) => candidate.promptVersion === String(promptVersion));
       const latest = previous[0];
       // Reuse active work, and reuse completed question generation. Enrichment
       // and validation are explicit user actions and should create fresh runs.
-      if (latest?.status === "succeeded" && shouldReuseCompletedDevelopmentRun(input.action)) return sendEnvelope(reply, request, { runId: latest.id, status: latest.status, versionId: version.id });
+      if (latest?.status === "succeeded" && shouldReuseCompletedDevelopmentRun(input.action)) return sendEnvelope(reply, request, { runId: latest.id, pending: false, versionId: version.id });
       if (isAiRetryLimitReached(input.action, previous.length)) return sendError(reply, request, "rate_limited", "This draft has reached the AI retry limit. You can continue without AI suggestions.", 429);
 
       let inputJson: string | undefined;
@@ -567,7 +562,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
         await appendIdeaEvent({ ideaId, ideaVersionId: version.id, actorType: "user", actorId: actor.userId, eventType: `${input.action}_queued`, correlationId: request.id, metadataJson: JSON.stringify({ runId: run.id }) });
         appendAuditEvent({ actorUserId: actor.userId, action: `idea.${input.action}_queued`, targetType: "idea", targetId: ideaId, metadata: { runId: run.id, versionId: version.id } });
       }
-      return sendEnvelope(reply, request, { runId: run.id, status: run.status, versionId: version.id }, 202);
+      return sendEnvelope(reply, request, { runId: run.id, pending: run.status === "queued" || run.status === "running", versionId: version.id }, 202);
     } catch (error) {
       if (error instanceof z.ZodError) return sendValidationError(reply, request);
       const mapped = sendMappedError(reply, request, error);
@@ -577,31 +572,35 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.get("/api/ideas/:id/ai-status", async (request, reply) => {
+  app.get("/api/ideas/:id/submission-readiness", async (request, reply) => {
     const actor = await requireActor(app, request, reply);
     if (!actor) return;
     const ideaId = parseId((request.params as { id: string }).id);
     if (!ideaId) return sendError(reply, request, "validation_error", "Invalid idea ID.", 400);
     try {
-      const snapshot = await getAuthorizedIdeaSnapshot(snapshotActor(actor), ideaId);
-      if (!snapshot) return sendError(reply, request, "not_found", "Idea not found.", 404);
+      const snapshot = await getAuthorizedIdeaSnapshot({ kind: "user", id: String(actor.userId) }, ideaId);
+      if (!snapshot || snapshot.idea.authorId !== actor.userId) return sendError(reply, request, "not_found", "Idea not found.", 404);
+      const latestVersion = snapshot.versions.reduce<(typeof snapshot.versions)[number] | undefined>(
+        (latest, version) => !latest || version.version > latest.version ? version : latest,
+        undefined,
+      );
+      const preflight = latestVersion && snapshot.runs
+        .filter((run) => run.ideaVersionId === latestVersion.id && run.jobKey === "idea.preflight")
+        .sort((left, right) => right.id - left.id)[0];
       return sendEnvelope(reply, request, {
-        idea: snapshot.idea,
-        runs: snapshot.runs.map(({ resultJson: _result, errorMessage: _error, ...run }) => run),
-        events: snapshot.events,
-        aiRunEvents: snapshot.aiRunEvents,
-        reviews: snapshot.reviews,
+        canFinalize: preflight?.status === "succeeded",
+        needsAttention: Boolean(preflight && ["failed", "timed_out", "cancelled"].includes(preflight.status)),
       });
     } catch (error) {
-      request.log.error({ err: error }, "Unable to load idea AI status");
-      return sendError(reply, request, "internal_error", "An unexpected server error occurred.", 500);
+      request.log.error({ err: error }, "Unable to load submission readiness");
+      return sendError(reply, request, "internal_error", "Unable to check submission readiness.", 500);
     }
   });
 
   app.post("/api/ideas/:id/ai-retry", async (request, reply) => {
     const actor = await requireActor(app, request, reply);
     if (!actor) return;
-    if (actor.role !== "back_office") return sendError(reply, request, "forbidden", "Reviewer access required.", 403);
+    if (actor.role !== "admin" && actor.role !== "maintainer") return sendError(reply, request, "forbidden", "Reviewer access required.", 403);
     const ideaId = Number((request.params as { id: string }).id);
     try {
       const snapshot = await getAuthorizedIdeaSnapshot({ kind: "admin", id: String(actor.userId) }, ideaId);
@@ -611,7 +610,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       if (!isManagedAiPrompt(failed.jobKey)) return sendError(reply, request, "conflict", "This AI job is no longer active and cannot be retried.", 409);
       const currentJob = getAiJob(failed.jobKey);
       const currentPromptVersion = getActiveAiPromptVersion(failed.jobKey);
-      if (!currentPromptVersion) return sendError(reply, request, "provider_unavailable", "The active AI prompt is not configured. Contact back-office support.", 503);
+      if (!currentPromptVersion) return sendError(reply, request, "provider_unavailable", "The active AI prompt is not configured. Contact an admin.", 503);
       const retry = await createAiRun({ ideaId: failed.ideaId, ideaVersionId: failed.ideaVersionId, jobKey: failed.jobKey, jobVersion: currentJob.version, promptVersion: String(currentPromptVersion), model: failed.model, idempotencyKey: `${failed.idempotencyKey}:retry:${Date.now()}`, correlationId: request.id, requestedBy: actor.userId, inputHash: failed.inputHash });
       await appendIdeaEvent({ ideaId, ideaVersionId: failed.ideaVersionId, actorType: "admin", actorId: actor.userId, eventType: "ai_retry_requested", correlationId: request.id, metadataJson: JSON.stringify({ previousRunId: failed.id, runId: retry.id }) });
       return sendEnvelope(reply, request, { runId: retry.id, status: retry.status }, 202);
@@ -672,7 +671,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/ideas/:id/review", async (request, reply) => {
     const actor = await requireActor(app, request, reply);
     if (!actor) return;
-    if (!["back_office", "business_owner"].includes(actor.role)) return sendError(reply, request, "forbidden", "Governance reviewer access required.", 403);
+    if (actor.role !== "business_owner") return sendError(reply, request, "forbidden", "Only the assigned business owner can manage this evaluation.", 403);
     const ideaId = Number((request.params as { id: string }).id);
     try {
       const input = reviewSchema.parse(request.body);

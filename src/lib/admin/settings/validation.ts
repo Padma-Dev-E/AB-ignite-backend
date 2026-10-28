@@ -3,7 +3,7 @@ import { AdminInputError } from "../query";
 export const settingKeys = ["minimum_priority_score", "priority_point_rules", "priority_level_rules", "priority_recommendation_rules", "priority_kpis", "priority_bands", "sla_days", "required_controls", "departments", "demo_access", "roles"] as const;
 export type SettingKey = typeof settingKeys[number];
 
-const roles = new Set(["employee", "back_office", "business_owner"]);
+const roles = new Set(["employee", "admin", "maintainer", "business_owner"]);
 // Keep policy keys aligned with the stages consumed by governance/service.ts.
 const slaStages = new Set(["screening", "business_review", "control_review", "decision", "poc", "implementation"]);
 const priorityRecords = new Set<SettingKey>(["priority_point_rules", "priority_level_rules", "priority_recommendation_rules", "priority_kpis", "priority_bands"]);
@@ -31,7 +31,7 @@ export function validatePolicySetting(key: string, value: string): void {
   } else if (key === "required_controls" || key === "departments") {
     if (!stringList(parsed, key === "required_controls" ? 100 : 200, key === "required_controls" ? 500 : 120)) throw new AdminInputError(`${key === "departments" ? "Departments" : "Required controls"} must be a list of unique names.`);
   } else if (key === "roles") {
-    if (!stringList(parsed, 3, 40) || parsed.some((item) => !roles.has(item))) throw new AdminInputError("Roles must be a list of unique supported names.");
+    if (!stringList(parsed, 4, 40) || parsed.some((item) => !roles.has(item))) throw new AdminInputError("Roles must be a list of unique supported names.");
   } else if (key === "demo_access") {
     if (!record(parsed) || Object.keys(parsed).length !== 1 || typeof parsed.enabled !== "boolean") throw new AdminInputError("Demo access must contain only an enabled boolean.");
   } else if (priorityRecords.has(key as SettingKey)) {

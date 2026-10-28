@@ -7,12 +7,12 @@ test("refresh-token JWT preserves the forced-change flag for back-office account
     id: 4,
     name: "New admin",
     email: "new-admin@example.test",
-    role: "back_office",
+    role: "admin",
     mustChangePassword: true,
   }, 12, 3, 1_800_000_000_000);
 
   assert.equal(payload.mustChangePassword, true);
-  assert.equal(payload.role, "back_office");
+  assert.equal(payload.role, "admin");
   assert.equal(payload.sessionId, "12");
   assert.equal(payload.sessionVersion, 3);
 });

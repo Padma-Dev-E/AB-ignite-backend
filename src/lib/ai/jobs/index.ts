@@ -3,6 +3,7 @@ import { ideaDecisionPackJob } from "./idea-decision-pack";
 import { ideaEnrichJob } from "./idea-enrich";
 import { ideaEstimateJob } from "./idea-estimate";
 import { ideaImpactPlanJob } from "./idea-impact-plan";
+import { ideaOwnerMatchJob } from "./idea-owner-match";
 import { ideaPreflightJob } from "./idea-preflight";
 import { ideaQuestionsJob } from "./idea-questions";
 import { ideaRiskJob } from "./idea-risk";
@@ -21,6 +22,7 @@ export const ideaJobs = [
   ideaEstimateJob,
   ideaDecisionPackJob,
   ideaImpactPlanJob,
+  ideaOwnerMatchJob,
 ] as const;
 
 for (const job of ideaJobs) registerAiJob(job as never);
@@ -30,6 +32,7 @@ export {
   ideaEnrichJob,
   ideaEstimateJob,
   ideaImpactPlanJob,
+  ideaOwnerMatchJob,
   ideaPreflightJob,
   ideaQuestionsJob,
   ideaRiskJob,
