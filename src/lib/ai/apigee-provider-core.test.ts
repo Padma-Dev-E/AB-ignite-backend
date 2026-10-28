@@ -49,6 +49,15 @@ test("accepts JSON embedded in explanatory text from an array-wrapped APIGEE res
   assert.deepEqual(JSON.parse(result.text), expected);
 });
 
+test("unwraps a JSON-stringified APIGEE envelope before reading its candidate text", async () => {
+  const expected = { title: "Reduce branch wait time", score: 8 };
+  const envelope = [{ candidates: [{ content: { role: "model", parts: [{ text: JSON.stringify(expected) }] }, finishReason: "STOP" }] }];
+  const provider = createApigeeProvider(config, { call: async () => JSON.stringify(JSON.stringify(envelope)) });
+
+  const result = await provider.generateStructured(request);
+  assert.deepEqual(JSON.parse(result.text), expected);
+});
+
 test("unwraps a JSON object returned as a JSON-encoded string", async () => {
   const expected = { title: "Reduce branch wait time", score: 8 };
   const provider = createApigeeProvider(config, {

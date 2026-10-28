@@ -1,6 +1,7 @@
 import { callApigeeAi } from "./apigee-client";
 import type { AiConfig } from "./config-core";
 import { AiProviderError, AiProviderOutputError, AiTimeoutError } from "./errors";
+import { extractJsonOutput, unwrapJsonStringLayers } from "./json-output";
 import type { AiProvider } from "./provider";
 import type { JsonSchema, StructuredGenerationRequest, StructuredGenerationResponse } from "./types";
 
@@ -31,8 +32,16 @@ function promptText(request: StructuredGenerationRequest, schema: JsonSchema) {
 }
 
 function responseEnvelopes(value: unknown): ApigeeEnvelope[] {
-  const roots = Array.isArray(value) ? value : [value];
-  return roots.filter((root): root is ApigeeEnvelope => Boolean(root) && typeof root === "object" && !Array.isArray(root));
+  const pending = [value];
+  const envelopes: ApigeeEnvelope[] = [];
+  let inspected = 0;
+  while (pending.length > 0 && inspected < 64) {
+    const root = unwrapJsonStringLayers(pending.shift());
+    inspected += 1;
+    if (Array.isArray(root)) pending.push(...root.slice(0, 64 - inspected));
+    else if (root && typeof root === "object") envelopes.push(root as ApigeeEnvelope);
+  }
+  return envelopes;
 }
 
 function safeReason(value: string) {
@@ -53,73 +62,6 @@ function extractText(value: unknown) {
     }
   }
   throw new AiProviderOutputError("APIGEE response did not contain candidate text", { code: "candidate_text_missing", stage: "candidate_extraction" });
-}
-
-function parseJsonCandidate(text: string, depth = 0): unknown | undefined {
-  if (depth > 3) return undefined;
-  const source = text.replace(/^\uFEFF/, "").trim();
-  if (!source) return undefined;
-
-  try {
-    const parsed: unknown = JSON.parse(source);
-    if (typeof parsed === "string") {
-      const nested = parseJsonCandidate(parsed, depth + 1);
-      return nested === undefined ? parsed : nested;
-    }
-    return parsed;
-  } catch { /* The model may wrap JSON in prose or a Markdown fence. */ }
-
-  // Some Gemini/APIGEE responses put JSON quotes behind backslashes but omit
-  // the enclosing string quotes, e.g. {\"field\":\"value\"}. Treat the
-  // candidate as JSON string content once, then parse the decoded JSON value.
-  if ((source.startsWith("{") || source.startsWith("[")) && source.includes("\\\"")) {
-    try {
-      const decoded = JSON.parse(`"${source.replace(/\r?\n/g, "\\n")}"`);
-      if (typeof decoded === "string") {
-        const nested = parseJsonCandidate(decoded, depth + 1);
-        if (nested !== undefined) return nested;
-      }
-    } catch { /* Continue with fenced and embedded JSON extraction. */ }
-  }
-
-  const fencedBlocks = source.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
-  for (const block of fencedBlocks) {
-    const parsed = parseJsonCandidate(block[1] ?? "", depth + 1);
-    if (parsed !== undefined) return parsed;
-  }
-
-  // Find complete object/array values within surrounding text. Track quotes
-  // and escapes so braces in JSON string values do not terminate the value.
-  let candidatesChecked = 0;
-  for (let start = 0; start < source.length && candidatesChecked < 64; start += 1) {
-    const first = source[start];
-    if (first !== "{" && first !== "[") continue;
-    candidatesChecked += 1;
-    const stack: string[] = [];
-    let inString = false;
-    let escaped = false;
-    for (let end = start; end < source.length; end += 1) {
-      const char = source[end];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (char === "\\") escaped = true;
-        else if (char === '"') inString = false;
-        continue;
-      }
-      if (char === '"') { inString = true; continue; }
-      if (char === "{" || char === "[") stack.push(char);
-      else if (char === "}" || char === "]") {
-        const opening = stack.pop();
-        if ((char === "}" && opening !== "{") || (char === "]" && opening !== "[")) break;
-        if (stack.length === 0) {
-          const parsed = parseJsonCandidate(source.slice(start, end + 1), depth + 1);
-          if (parsed !== undefined) return parsed;
-          break;
-        }
-      }
-    }
-  }
-  return undefined;
 }
 
 async function updateDebugStage(config: AiConfig, request: StructuredGenerationRequest, attempt: number, update: { processingStage: string; errorCode?: string | null; errorMessage?: string | null }) {
@@ -159,16 +101,12 @@ export function createApigeeProvider(config: AiConfig, dependencies: ApigeeProvi
         try { await updateDebugStage(config, request, attempt, { processingStage: "output_size_limit", errorCode: "structured_output_too_large", errorMessage: "APIGEE structured output exceeded the configured size limit" }); } catch { /* best effort */ }
         throw new AiProviderOutputError("APIGEE structured output exceeded the configured size limit", { code: "structured_output_too_large", stage: "output_size_limit" });
       }
-      const parsed = parseJsonCandidate(rawText);
-      if (parsed === undefined) {
+      const extractedJson = extractJsonOutput(rawText);
+      if (!extractedJson) {
         try { await updateDebugStage(config, request, attempt, { processingStage: "model_json_parsing", errorCode: "model_output_not_json", errorMessage: "APIGEE returned malformed JSON" }); } catch { /* best effort */ }
         throw new AiProviderOutputError("APIGEE returned malformed JSON", { code: "model_output_not_json", stage: "model_json_parsing" });
       }
-      const text = JSON.stringify(parsed);
-      if (typeof text !== "string") {
-        try { await updateDebugStage(config, request, attempt, { processingStage: "model_json_parsing", errorCode: "model_output_not_json", errorMessage: "APIGEE returned malformed JSON" }); } catch { /* best effort */ }
-        throw new AiProviderOutputError("APIGEE returned malformed JSON", { code: "model_output_not_json", stage: "model_json_parsing" });
-      }
+      const text = extractedJson.jsonText;
       try { await updateDebugStage(config, request, attempt, { processingStage: "schema_validation" }); } catch { /* best effort */ }
 
       return {
