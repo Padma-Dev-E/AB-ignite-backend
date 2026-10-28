@@ -57,7 +57,9 @@ export function evaluateAiInput(input: unknown, policy: AiSafetyPolicy): SafeAiI
     redactions.push("email");
     return "[REDACTED_EMAIL]";
   });
-  const serialized = `<user_data>\n${serializedBody}\n</user_data>`;
+  // Keep policy output as plain JSON. The provider owns the single prompt
+  // delimiter pair, so callers cannot accidentally double-wrap user data.
+  const serialized = serializedBody;
   return {
     allowed: true,
     serialized,

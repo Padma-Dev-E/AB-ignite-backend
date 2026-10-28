@@ -4,6 +4,7 @@ import type { AiConfig } from "./config-core";
 import { AiProviderError, AiProviderOutputError } from "./errors";
 import { createApigeeProvider } from "./apigee-provider-core";
 import { createApigeeProvider as createRuntimeApigeeProvider } from "./apigee-provider-core.js";
+import { evaluateAiInput } from "./policy";
 import type { StructuredGenerationRequest } from "./types";
 
 const config = {
@@ -163,4 +164,33 @@ test("does not truncate a streamed candidate split across more than 128 chunks",
 
   const result = await provider.generateStructured(request);
   assert.deepEqual(JSON.parse(result.text), expected);
+});
+
+test("sends the actual system prompt, schema, and sanitized user JSON inside one set of delimiters", async () => {
+  const userInput = { kind: "idea", title: "Improve branch appointment flow", dataClassification: "internal" };
+  const safeInput = evaluateAiInput(userInput, {
+    maxInputChars: 30_000,
+    allowedDataClassification: "internal",
+    blockRestricted: true,
+    blockSensitive: true,
+  });
+  assert.equal(safeInput.allowed, true);
+  if (!safeInput.allowed) return;
+  const capturedBodies: unknown[] = [];
+  const provider = createApigeeProvider(config, {
+    call: async (_config, body) => {
+      capturedBodies.push(body);
+      return { candidates: [{ content: { parts: [{ text: "{}" }] }, finishReason: "STOP" }] };
+    },
+  });
+
+  await provider.generateStructured({ ...request, systemPrompt: "Pinned active prompt text", userContent: safeInput.serialized });
+  const body = capturedBodies[0] as { contents: { parts: Array<{ text: string }> } };
+  const prompt = body.contents.parts[0]?.text ?? "";
+
+  assert.ok(prompt.includes("<system_instructions>\nPinned active prompt text\n</system_instructions>"));
+  assert.ok(prompt.includes(`<response_schema>\n${JSON.stringify(request.responseJsonSchema)}\n</response_schema>`));
+  assert.ok(prompt.includes(`<user_data>\n${JSON.stringify(userInput)}\n</user_data>`));
+  assert.equal(prompt.match(/<user_data>/g)?.length, 1);
+  assert.equal(prompt.match(/<system_instructions>/g)?.length, 1);
 });
