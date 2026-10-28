@@ -183,6 +183,13 @@
       "when": 1792940000000,
       "tag": "0025_recover_owner_approved_ideas",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1793169807191,
+      "tag": "0026_ai_debug_exchanges",
+      "breakpoints": true
     }
   ]
 }

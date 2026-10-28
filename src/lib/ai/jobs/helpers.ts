@@ -60,13 +60,35 @@ export const jsonOption: JsonSchema = {
 };
 export const jsonScore: JsonSchema = {
   type: "object",
-  properties: { score: { type: "number", minimum: 0, maximum: 5 }, rationale: { type: "string" } },
+  properties: {
+    score: { type: "number", description: "Score from 0 to 5 using the shared quality anchors; higher means stronger support, not stronger wording.", minimum: 0, maximum: 5 },
+    rationale: { type: "string", description: "Briefly cite supplied idea details supporting the score and note the most material limitation, if any." },
+  },
   required: ["score", "rationale"],
+};
+const scoreDescriptions: Record<string, string> = {
+  novelty: "Distinctiveness supported by supplied context; do not claim no similar idea exists without evidence.",
+  problemClarity: "How clearly the current problem, process, and affected group are described.",
+  customerImpact: "Credible customer benefit, only when the proposal supports a customer effect.",
+  employeeImpact: "Credible employee or team benefit supported by the proposal.",
+  strategicAlignment: "Alignment to a goal explicitly supplied in context; do not invent bank strategy.",
+  feasibility: "Plausibility of the implementation path given supplied information and material dependencies.",
+  value: "Proportionate expected benefit relative to the problem and effort described.",
+  risk: "Risk readiness: how well material risks are understood and mitigations are plausible; this is not risk severity.",
+  urgency: "Evidence of time sensitivity, recurring harm, or cost of delay.",
+  scalability: "Evidence the approach can extend to additional users or processes without unsupported assumptions.",
 };
 export const jsonScores: JsonSchema = {
   type: "object",
-  properties: Object.fromEntries(["novelty", "problemClarity", "customerImpact", "employeeImpact", "strategicAlignment", "feasibility", "value", "risk", "urgency", "scalability"].map((key) => [key, jsonScore])),
-  required: ["novelty", "problemClarity", "customerImpact", "employeeImpact", "strategicAlignment", "feasibility", "value", "risk", "urgency", "scalability"],
+  properties: Object.fromEntries(Object.entries(scoreDescriptions).map(([key, description]) => [key, {
+    ...jsonScore,
+    description,
+    properties: {
+      ...jsonScore.properties,
+      score: { ...jsonScore.properties?.score, description: `${description} Use the shared 0–5 rubric.` },
+    },
+  }])),
+  required: Object.keys(scoreDescriptions),
 };
 
 export function defineIdeaJob<TInput = IdeaAnalysisInput, TOutput = unknown>(definition: {

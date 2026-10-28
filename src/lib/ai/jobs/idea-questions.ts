@@ -17,7 +17,7 @@ export const ideaQuestionsJob = defineIdeaJob({
         type: "object",
         additionalProperties: false,
         properties: {
-          id: { type: "string", description: "Stable short identifier unique within this response.", minLength: 1, maxLength: 80 },
+          id: { type: "string", description: "Stable short identifier derived from the topic, such as beneficiaries or success_measure.", minLength: 1, maxLength: 80 },
           topic: { type: "string", description: "The review topic this question addresses.", enum: ["beneficiaries", "current_process", "needed", "risks", "success_measure"] },
           question: { type: "string", description: "A direct, answerable question grounded in a concrete detail or omission in this idea.", minLength: 1, maxLength: 500 },
           reason: { type: "string", description: "Why this answer matters for understanding or evaluating this specific proposal.", minLength: 1, maxLength: 500 },

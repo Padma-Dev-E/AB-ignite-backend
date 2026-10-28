@@ -36,4 +36,10 @@ export const env = Object.freeze({
   allowedOrigins: (process.env.API_ALLOWED_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),
   maxBodyBytes: positiveInteger("API_MAX_BODY_BYTES", 1_048_576),
   skipSslAiCalls: booleanValue("SKIP_SSL_AI_CALLS", false),
+  aiDebugPayloads: booleanValue("AI_DEBUG_PAYLOADS", false),
+  aiDebugRetentionHours: (() => {
+    const value = positiveInteger("AI_DEBUG_RETENTION_HOURS", 1);
+    if (value > 24) throw new Error("AI_DEBUG_RETENTION_HOURS must be between 1 and 24.");
+    return value;
+  })(),
 });

@@ -7,17 +7,25 @@ export class AiError extends Error {
 export class AiProviderError extends AiError {
     category;
     status;
+    code;
+    stage;
     constructor(category, message, metadata = {}) {
         super(message);
         this.name = "AiProviderError";
         this.category = category;
         this.status = metadata.status;
+        this.code = metadata.code ?? "provider_error";
+        this.stage = metadata.stage ?? "provider_request";
     }
 }
 export class AiProviderOutputError extends AiError {
-    constructor(message) {
+    code;
+    stage;
+    constructor(message, metadata = {}) {
         super(message);
         this.name = "AiProviderOutputError";
+        this.code = metadata.code ?? "provider_output_error";
+        this.stage = metadata.stage ?? "response_parsing";
     }
 }
 export class AiSchemaValidationError extends AiError {

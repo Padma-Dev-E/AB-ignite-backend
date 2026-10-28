@@ -55,6 +55,8 @@ export function getAiConfig() {
         apigeeUrl: process.env.APIGEE_URL?.trim() || undefined,
         apigeeClientId: process.env.APIGEE_CLIENT_ID?.trim() || undefined,
         skipSslAiCalls: booleanValue("SKIP_SSL_AI_CALLS", false),
+        aiDebugPayloads: booleanValue("AI_DEBUG_PAYLOADS", false),
+        aiDebugRetentionHours: numberValue("AI_DEBUG_RETENTION_HOURS", 1, { min: 1, max: 24 }),
         timeoutMs: numberValue("AI_TIMEOUT_MS", DEFAULTS.timeoutMs, { min: 1_000 }, "GEMINI_TIMEOUT_MS"),
         maxAttempts: numberValue("AI_MAX_ATTEMPTS", DEFAULTS.maxAttempts, { min: 1, max: 10 }, "GEMINI_MAX_ATTEMPTS"),
         retryInitialDelayMs: numberValue("AI_RETRY_INITIAL_DELAY_MS", DEFAULTS.retryInitialDelayMs, { min: 0 }, "GEMINI_RETRY_INITIAL_DELAY_MS"),

@@ -201,6 +201,26 @@ export const aiRuns = sqliteTable("ai_runs", {
   index("ai_runs_correlation_idx").on(table.correlationId),
 ]);
 
+export const aiDebugExchanges = sqliteTable("ai_debug_exchanges", {
+  id: integer().primaryKey({ autoIncrement: true }),
+  runId: integer().notNull().references(() => aiRuns.id, { onDelete: "cascade" }),
+  attempt: integer().notNull(),
+  requestPayloadEncrypted: text().notNull(),
+  responsePayloadEncrypted: text(),
+  responseStatus: integer(),
+  responseStatusText: text(),
+  responseTruncated: integer({ mode: "boolean" }).notNull().default(false),
+  durationMs: integer().notNull().default(0),
+  processingStage: text().notNull().default("http_response"),
+  errorCode: text(),
+  errorMessage: text(),
+  createdAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  expiresAt: integer({ mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  uniqueIndex("ai_debug_exchanges_run_attempt_unique").on(table.runId, table.attempt),
+  index("ai_debug_exchanges_expiry_idx").on(table.expiresAt),
+]);
+
 export const ideaAiResults = sqliteTable("idea_ai_results", {
   id: integer().primaryKey({ autoIncrement: true }),
   ideaId: integer().notNull().references(() => ideas.id, { onDelete: "cascade" }),
@@ -834,6 +854,7 @@ export const schema = {
   aiPromptVersions,
   ideaVersions,
   aiRuns,
+  aiDebugExchanges,
   aiRunEvents,
   ideaAiResults,
   ideaEvents,
@@ -880,6 +901,7 @@ export type IdeaVersion = typeof ideaVersions.$inferSelect;
 export type NewIdeaVersion = typeof ideaVersions.$inferInsert;
 export type AiRun = typeof aiRuns.$inferSelect;
 export type NewAiRun = typeof aiRuns.$inferInsert;
+export type AiDebugExchange = typeof aiDebugExchanges.$inferSelect;
 export type AiRunEvent = typeof aiRunEvents.$inferSelect;
 export type IdeaAiResult = typeof ideaAiResults.$inferSelect;
 export type IdeaEvent = typeof ideaEvents.$inferSelect;

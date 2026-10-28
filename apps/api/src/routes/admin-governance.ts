@@ -3,6 +3,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, RouteHandlerMethod 
 import { z } from "zod";
 import { db } from "../../../../src/db/connection.js";
 import { aiRuns } from "../../../../src/db/schema.js";
+import { getAiConfig } from "../../../../src/lib/ai/config-core.js";
+import { listAiDebugExchangesForIdea } from "../../../../src/lib/ai/debug-exchanges.js";
 import { AuthorizationError, assertCapability, loadAuthorizationContext } from "../../../../src/lib/auth/authorization.js";
 import { CAPABILITIES } from "../../../../src/lib/auth/permissions.js";
 import {
@@ -269,6 +271,20 @@ export async function registerAdminGovernanceRoutes(app: FastifyInstance): Promi
     if (!actor) return;
     const data = await getEvaluation(positiveId(params(request).ideaId), { userId: actor.userId, sessionId: actor.sessionId });
     return sendEnvelope(reply, request, data);
+  }));
+
+  app.get("/api/admin/governance/evaluations/:ideaId/ai-diagnostics", route(async (request, reply) => {
+    const actor = await authorizedActor(app, request, reply, CAPABILITIES.GOVERNANCE_READ);
+    if (!actor) return;
+    await requireGovernanceRole({ userId: actor.userId, sessionId: actor.sessionId }, ["back_office"]);
+    const config = getAiConfig();
+    reply.header("cache-control", "private, no-store, max-age=0");
+    if (!config.aiDebugPayloads) return sendEnvelope(reply, request, { enabled: false, retentionHours: config.aiDebugRetentionHours, exchanges: [] });
+    return sendEnvelope(reply, request, {
+      enabled: true,
+      retentionHours: config.aiDebugRetentionHours,
+      exchanges: await listAiDebugExchangesForIdea(positiveId(params(request).ideaId)),
+    });
   }));
 
   app.post("/api/admin/governance/ideas/:ideaId/decision", route(async (request, reply) => {

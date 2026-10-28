@@ -26,24 +26,55 @@ function contentHash(prompt: string) {
 
 type PromptTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-function insertDefaultVersion(tx: PromptTransaction, input: { jobKey: string; version: number; systemPrompt: string; schemaVersion: string }) {
+function insertDefaultVersion(tx: PromptTransaction, input: { jobKey: string; version: number; systemPrompt: string; schemaVersion: string; reason?: string }) {
   tx.insert(aiPromptVersions).values({
-    ...input,
+    jobKey: input.jobKey,
+    version: input.version,
+    systemPrompt: input.systemPrompt,
+    schemaVersion: input.schemaVersion,
     contentHash: contentHash(input.systemPrompt),
     isDefault: true,
-    reason: "System default prompt",
+    reason: input.reason ?? "System default prompt",
   }).onConflictDoNothing().run();
 }
 
-/** Seeds the current prompt set once. Runtime AI execution reads prompt text only from SQLite. */
+/** Seeds system defaults as immutable prompt revisions without replacing back-office edits. */
 export function ensureAiPromptCatalogue() {
   db.transaction((tx) => {
     for (const prompt of aiPromptSeeds) {
       const existingCatalog = tx.select().from(aiPromptCatalog).where(eq(aiPromptCatalog.jobKey, prompt.jobKey)).limit(1).get();
       if (!existingCatalog) {
         tx.insert(aiPromptCatalog).values({ jobKey: prompt.jobKey, name: prompt.name, description: prompt.description, activeVersion: 1 }).run();
+        insertDefaultVersion(tx, { jobKey: prompt.jobKey, version: 1, systemPrompt: prompt.systemPrompt, schemaVersion: prompt.schemaVersion });
+        continue;
       }
-      insertDefaultVersion(tx, { jobKey: prompt.jobKey, version: 1, systemPrompt: prompt.systemPrompt, schemaVersion: prompt.schemaVersion });
+
+      const active = tx.select().from(aiPromptVersions).where(and(
+        eq(aiPromptVersions.jobKey, prompt.jobKey),
+        eq(aiPromptVersions.version, existingCatalog.activeVersion),
+      )).limit(1).get();
+      if (!active) {
+        insertDefaultVersion(tx, { jobKey: prompt.jobKey, version: 1, systemPrompt: prompt.systemPrompt, schemaVersion: prompt.schemaVersion });
+        tx.update(aiPromptCatalog).set({ activeVersion: 1, updatedAt: new Date() }).where(eq(aiPromptCatalog.jobKey, prompt.jobKey)).run();
+        continue;
+      }
+
+      // A human-edited active prompt is owned by back office. Never replace it during db:seed.
+      if (!active.isDefault || active.contentHash === contentHash(prompt.systemPrompt)) continue;
+
+      const [maximum] = tx.select({ value: max(aiPromptVersions.version) }).from(aiPromptVersions).where(eq(aiPromptVersions.jobKey, prompt.jobKey)).all();
+      const version = Number(maximum?.value ?? 0) + 1;
+      insertDefaultVersion(tx, {
+        jobKey: prompt.jobKey,
+        version,
+        systemPrompt: prompt.systemPrompt,
+        schemaVersion: prompt.schemaVersion,
+        reason: "Updated system default prompt",
+      });
+      tx.update(aiPromptCatalog).set({ activeVersion: version, updatedAt: new Date() }).where(and(
+        eq(aiPromptCatalog.jobKey, prompt.jobKey),
+        eq(aiPromptCatalog.activeVersion, existingCatalog.activeVersion),
+      )).run();
     }
   });
 }

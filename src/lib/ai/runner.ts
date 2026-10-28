@@ -8,6 +8,7 @@ import type { SafeAiInput } from "./policy";
 import type { AiJobDefinition, AiRunnerDependencies, AiRunResult, RunStructuredAiArgs } from "./types";
 import type { AiRun } from "../../db/schema";
 import { getAiPromptVersion } from "./prompts/catalog";
+import { getAiConfig } from "./config-core";
 import {
   appendIdeaEvent,
   claimAiRun,
@@ -54,7 +55,12 @@ function hashInput(input: unknown) {
 }
 
 function outputError(result: { success: false; error: z.ZodError }) {
-  return new AiSchemaValidationError("AI output did not match the registered job schema", { cause: result.error });
+  const fields = [...new Set(result.error.issues.map((issue) => {
+    const path = issue.path.map((part) => typeof part === "number" ? String(part) : String(part).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 40)).join(".").slice(0, 120);
+    return `${path || "response"} (${issue.code})`;
+  }))].slice(0, 12);
+  const summary = fields.length ? `AI response did not match expected fields: ${fields.join(", ")}` : "AI response did not match the expected format";
+  return new AiSchemaValidationError(summary, { cause: result.error });
 }
 
 async function failRun(runId: number, ideaId: number, actor: RunStructuredAiArgs<unknown>["actor"], error: unknown) {
@@ -96,11 +102,32 @@ export async function executeClaimedAiRun<TInput, TOutput>(
       maxOutputTokens: dependencies.maxOutputTokens ?? 4_096,
       temperature: dependencies.temperature ?? 0,
       timeoutMs: dependencies.timeoutMs ?? 30_000,
+      runId: claimed.id,
     });
     let decoded: unknown;
     try { decoded = JSON.parse(response.text); } catch (error) { throw new AiSchemaValidationError("AI output was not valid JSON", { cause: error }); }
     const parsedOutput = job.outputSchema.safeParse(decoded);
-    if (!parsedOutput.success) throw outputError(parsedOutput);
+    if (!parsedOutput.success) {
+      const error = outputError(parsedOutput);
+      try {
+        const config = getAiConfig();
+        if (config.aiDebugPayloads) {
+          const { updateAiDebugExchangeStage } = await import("./debug-exchanges");
+          await updateAiDebugExchangeStage(config, claimed.id, claimed.attemptCount, {
+            processingStage: "task_schema_validation",
+            errorCode: "schema_validation_error",
+            errorMessage: error.message,
+          });
+        }
+      } catch { /* diagnostic recording is best effort */ }
+      throw error;
+    }
+    if (getAiConfig().aiDebugPayloads) {
+      try {
+        const { updateAiDebugExchangeStage } = await import("./debug-exchanges");
+        await updateAiDebugExchangeStage(getAiConfig(), claimed.id, claimed.attemptCount, { processingStage: "completed" });
+      } catch { /* diagnostic recording is best effort */ }
+    }
     await completeAiRun(claimed.id, {
       resultJson: JSON.stringify(parsedOutput.data),
       usageJson: response.usage ? JSON.stringify(response.usage) : undefined,

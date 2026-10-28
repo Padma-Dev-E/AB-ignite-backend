@@ -134,6 +134,29 @@ export const ideaReferenceSequences = sqliteTable("idea_reference_sequences", {
     year: integer().primaryKey(),
     lastValue: integer().notNull().default(0),
 });
+export const aiPromptCatalog = sqliteTable("ai_prompt_catalog", {
+    jobKey: text().primaryKey(),
+    name: text().notNull(),
+    description: text().notNull(),
+    activeVersion: integer().notNull(),
+    createdAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+});
+export const aiPromptVersions = sqliteTable("ai_prompt_versions", {
+    id: integer().primaryKey({ autoIncrement: true }),
+    jobKey: text().notNull().references(() => aiPromptCatalog.jobKey, { onDelete: "cascade" }),
+    version: integer().notNull(),
+    systemPrompt: text().notNull(),
+    contentHash: text().notNull(),
+    createdBy: integer().references(() => users.id, { onDelete: "set null" }),
+    reason: text(),
+    isDefault: integer({ mode: "boolean" }).notNull().default(false),
+    schemaVersion: text().notNull(),
+    createdAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+}, (table) => [
+    uniqueIndex("ai_prompt_versions_key_version_unique").on(table.jobKey, table.version),
+    index("ai_prompt_versions_hash_idx").on(table.contentHash),
+]);
 export const aiRuns = sqliteTable("ai_runs", {
     id: integer().primaryKey({ autoIncrement: true }),
     ideaId: integer().notNull().references(() => ideas.id, { onDelete: "cascade" }),
@@ -141,6 +164,7 @@ export const aiRuns = sqliteTable("ai_runs", {
     jobKey: text().notNull(),
     jobVersion: text().notNull(),
     promptVersion: text().notNull(),
+    inputJson: text(),
     model: text().notNull(),
     status: text({ enum: ["queued", "running", "succeeded", "failed", "timed_out", "cancelled"] }).notNull().default("queued"),
     idempotencyKey: text().notNull(),
@@ -163,6 +187,25 @@ export const aiRuns = sqliteTable("ai_runs", {
     index("ai_runs_idea_idx").on(table.ideaId, table.createdAt),
     index("ai_runs_status_available_idx").on(table.status, table.availableAt),
     index("ai_runs_correlation_idx").on(table.correlationId),
+]);
+export const aiDebugExchanges = sqliteTable("ai_debug_exchanges", {
+    id: integer().primaryKey({ autoIncrement: true }),
+    runId: integer().notNull().references(() => aiRuns.id, { onDelete: "cascade" }),
+    attempt: integer().notNull(),
+    requestPayloadEncrypted: text().notNull(),
+    responsePayloadEncrypted: text(),
+    responseStatus: integer(),
+    responseStatusText: text(),
+    responseTruncated: integer({ mode: "boolean" }).notNull().default(false),
+    durationMs: integer().notNull().default(0),
+    processingStage: text().notNull().default("http_response"),
+    errorCode: text(),
+    errorMessage: text(),
+    createdAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    expiresAt: integer({ mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+    uniqueIndex("ai_debug_exchanges_run_attempt_unique").on(table.runId, table.attempt),
+    index("ai_debug_exchanges_expiry_idx").on(table.expiresAt),
 ]);
 export const ideaAiResults = sqliteTable("idea_ai_results", {
     id: integer().primaryKey({ autoIncrement: true }),
@@ -728,8 +771,11 @@ export const schema = {
     ideaSubmissions,
     ideaSettings,
     ideaReferenceSequences,
+    aiPromptCatalog,
+    aiPromptVersions,
     ideaVersions,
     aiRuns,
+    aiDebugExchanges,
     aiRunEvents,
     ideaAiResults,
     ideaEvents,

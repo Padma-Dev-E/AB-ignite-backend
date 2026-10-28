@@ -42,6 +42,7 @@ export type StructuredGenerationRequest = {
   maxOutputTokens: number;
   temperature: number;
   timeoutMs: number;
+  runId?: number;
 };
 
 export type StructuredGenerationResponse = {
