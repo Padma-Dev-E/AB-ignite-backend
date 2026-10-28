@@ -59,6 +59,17 @@ test("unwraps a JSON object returned as a JSON-encoded string", async () => {
   assert.deepEqual(JSON.parse(result.text), expected);
 });
 
+test("decodes escaped structural quotes in an otherwise unquoted JSON object", async () => {
+  const expected = { suggestedTitle: "Structured Readiness Checklist", conciseSummary: "Coordinate procedure changes." };
+  const escaped = String.raw`{\"suggestedTitle\":\"Structured Readiness Checklist\",\"conciseSummary\":\"Coordinate procedure changes.\"}`;
+  const provider = createApigeeProvider(config, {
+    call: async () => [{ candidates: [{ content: { role: "model", parts: [{ text: escaped }] }, finishReason: "STOP" }] }],
+  });
+
+  const result = await provider.generateStructured(request);
+  assert.deepEqual(JSON.parse(result.text), expected);
+});
+
 test("extracts JSON from a fenced block even when the model adds surrounding text", async () => {
   const expected = { title: "Reduce branch wait time", score: 8 };
   const provider = createApigeeProvider(config, {

@@ -69,6 +69,19 @@ function parseJsonCandidate(text: string, depth = 0): unknown | undefined {
     return parsed;
   } catch { /* The model may wrap JSON in prose or a Markdown fence. */ }
 
+  // Some Gemini/APIGEE responses put JSON quotes behind backslashes but omit
+  // the enclosing string quotes, e.g. {\"field\":\"value\"}. Treat the
+  // candidate as JSON string content once, then parse the decoded JSON value.
+  if ((source.startsWith("{") || source.startsWith("[")) && source.includes("\\\"")) {
+    try {
+      const decoded = JSON.parse(`"${source.replace(/\r?\n/g, "\\n")}"`);
+      if (typeof decoded === "string") {
+        const nested = parseJsonCandidate(decoded, depth + 1);
+        if (nested !== undefined) return nested;
+      }
+    } catch { /* Continue with fenced and embedded JSON extraction. */ }
+  }
+
   const fencedBlocks = source.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
   for (const block of fencedBlocks) {
     const parsed = parseJsonCandidate(block[1] ?? "", depth + 1);
