@@ -7,7 +7,7 @@ test("enrichment prompt uses the submitted idea context and avoids invented evid
   const prompt = aiPromptSeeds.find((item) => item.jobKey === "idea.enrich")?.systemPrompt ?? "";
   assert.match(prompt, /title, summary, problem, solution, benefits, risks, category/i);
   assert.match(prompt, /answers.*metrics.*evidence.*relatedIdeas.*differentiation/i);
-  assert.match(prompt, /do not invent|never invent|unsupported claims/i);
+  assert.match(prompt, /Do not add Arab Bank systems, policies, products, customer facts.*unless the author supplied them/i);
   assert.match(prompt, /suggestedTitle/i);
 });
 

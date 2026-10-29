@@ -15,6 +15,7 @@ import { IDEA_VALIDATION_PASS_SCORE, normalizeIdeaValidationScore } from "../../
 import {
   CommentListQuerySchema,
   IdeaCommentSchema,
+  IdeaDraftProgressSchema,
   IdeaInputSchema,
   IdeaListQuerySchema,
   IdeaSubmissionDetailsSchema,
@@ -30,6 +31,7 @@ import {
   createIdeaComment,
   getAuthorizedIdeaSnapshot,
   getIdeaById,
+  getIdeaDraftProgress,
   getIdeaMinimumScore,
   getIdeaSubmissionDetails,
   getIdeaVersionPreflight,
@@ -37,6 +39,7 @@ import {
   listIdeas,
   recordHumanReview,
   saveIdeaSubmission,
+  saveIdeaDraftProgress,
   setIdeaMinimumScore,
   submitIdea,
   supportIdea,
@@ -174,7 +177,8 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
     if (!actor) return;
     try {
       const query = IdeaListQuerySchema.parse(queryObject(request));
-      return sendEnvelope(reply, request, await listIdeas(actorFor(actor), query));
+      const scopedQuery = actor.role === "employee" ? { ...query, mine: true } : query;
+      return sendEnvelope(reply, request, await listIdeas(actorFor(actor), scopedQuery));
     } catch (error) {
       if (error instanceof z.ZodError) return sendValidationError(reply, request);
       request.log.error({ err: error }, "Unable to list ideas");
@@ -249,9 +253,11 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
     if (!ideaId) return sendError(reply, request, "validation_error", "Invalid idea ID.", 400);
     try {
       const idea = await getIdeaById(ideaId);
-      if (!idea || (idea.status === "draft" && idea.authorId !== actor.userId)) return sendError(reply, request, "not_found", "Idea not found.", 404);
+      if (!idea || ((actor.role === "employee" || idea.status === "draft") && idea.authorId !== actor.userId)) return sendError(reply, request, "not_found", "Idea not found.", 404);
       const comments = await listIdeaComments(ideaId, CommentListQuerySchema.parse(queryObject(request)));
       const submission = await getIdeaSubmissionDetails(ideaId);
+      const isDraftOwner = idea.status === "draft" && idea.authorId === actor.userId;
+      const draftProgress = isDraftOwner ? await getIdeaDraftProgress(actorFor(actor), ideaId) : null;
       // Draft resumes need the database version ID so the employee wizard can
       // match saved enrichment/question/validation runs to this exact version.
       // Keep it scoped to the draft owner; public idea details do not need it.
@@ -292,11 +298,31 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
           }
         }
       }
-      return sendEnvelope(reply, request, { idea, ...(versionId ? { versionId } : {}), ...(pendingSubmission ? { pendingSubmission } : {}), comments, submission });
+      return sendEnvelope(reply, request, { idea, ...(versionId ? { versionId } : {}), ...(pendingSubmission ? { pendingSubmission } : {}), ...(draftProgress ? { draftProgress } : {}), comments, submission });
     } catch (error) {
       if (error instanceof z.ZodError) return sendValidationError(reply, request);
       request.log.error({ err: error }, "Unable to load idea");
       return sendError(reply, request, "internal_error", "An unexpected server error occurred.", 500);
+    }
+  });
+
+  app.put("/api/ideas/:id/draft-progress", async (request, reply) => {
+    const actor = await requireActor(app, request, reply);
+    if (!actor) return;
+    const ideaId = parseId((request.params as { id: string }).id);
+    if (!ideaId) return sendError(reply, request, "validation_error", "Invalid idea ID.", 400);
+    try {
+      const input = IdeaDraftProgressSchema.parse(request.body);
+      const idea = await getIdeaById(ideaId);
+      if (!idea || idea.authorId !== actor.userId) return sendError(reply, request, "not_found", "Draft not found.", 404);
+      if (idea.status !== "draft") return sendError(reply, request, "conflict", "Only a draft can save wizard progress.", 409);
+      const saved = await saveIdeaDraftProgress(actorFor(actor), ideaId, input);
+      if (!saved) return sendError(reply, request, "not_found", "Draft not found.", 404);
+      return sendEnvelope(reply, request, { saved: true });
+    } catch (error) {
+      if (error instanceof z.ZodError) return sendValidationError(reply, request);
+      request.log.error({ err: error, ideaId }, "Unable to save idea draft progress");
+      return sendError(reply, request, "internal_error", "Unable to save draft progress right now.", 500);
     }
   });
 
@@ -415,7 +441,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
     } catch (error) {
       if (error instanceof z.ZodError) return sendValidationError(reply, request);
       if (error instanceof IdeaPriorityMinimumError) return sendLowScoreError(reply, request, error);
-      if (error instanceof Error && /below the minimum|must pass validation|validation must pass|answers and all three|current status|human review submission/i.test(error.message)) return sendError(reply, request, "submission_rejected", error.message, 422);
+      if (error instanceof Error && /below the minimum|must pass validation|validation must pass|answers and all three|current status|human review submission|edit the returned idea/i.test(error.message)) return sendError(reply, request, "submission_rejected", error.message, 422);
       const mapped = sendMappedError(reply, request, error);
       if (mapped) return mapped;
       request.log.error({ err: error }, "Unable to submit idea");
@@ -475,7 +501,11 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
         const contentHash = createHash("sha256").update(JSON.stringify(next)).digest("hex");
         const updated = await db.transaction((tx) => {
           const [latest] = tx.select().from(ideaVersions).where(eq(ideaVersions.ideaId, ideaId)).orderBy(desc(ideaVersions.version)).limit(1).all();
-          const [preflight] = tx.select({ id: aiRuns.id }).from(aiRuns).where(and(eq(aiRuns.ideaId, ideaId), eq(aiRuns.jobKey, "idea.preflight"))).limit(1).all();
+          const [preflight] = tx.select({ id: aiRuns.id }).from(aiRuns).where(and(
+            eq(aiRuns.ideaId, ideaId),
+            eq(aiRuns.jobKey, "idea.preflight"),
+            inArray(aiRuns.status, ["queued", "running"]),
+          )).limit(1).all();
           if (!latest || latest.id !== version.id || preflight) return null;
           const [idea] = tx.update(ideas).set({ ...input.input, updatedAt: new Date() }).where(and(eq(ideas.id, ideaId), eq(ideas.authorId, actor.userId), inArray(ideas.status, ["draft", "screening"]))).returning().all();
           if (!idea) return null;
@@ -506,6 +536,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
       let inputJson: string | undefined;
       let inputHash = version.contentHash;
       if (input.action === "validate") {
+        const savedSubmission = await getIdeaSubmissionDetails(ideaId);
         const topicOrder = ["beneficiaries", "current_process", "needed", "risks", "success_measure"] as const;
         const questionRun = snapshot.runs.filter((run) => run.jobKey === "idea.questions" && run.ideaVersionId === version.id && run.status === "succeeded").sort((left, right) => right.id - left.id)[0];
         let questions: Array<{ question: string; topic?: typeof topicOrder[number] }> = [];
@@ -551,6 +582,7 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
           buildsOnId: snapshot.idea.buildsOnId ?? undefined,
           differentiation: input.differentiation,
           ...(completeAnswers ? { answers: Object.fromEntries(topicOrder.map((topic) => [topic === "current_process" ? "currentProcess" : topic === "success_measure" ? "successMeasure" : topic, topicAnswers[topic]!])) } : {}),
+          ...(savedSubmission ? { metrics: IdeaSubmissionDetailsSchema.shape.metrics.parse(savedSubmission.metrics) } : {}),
           evidence: [...originalDescriptionEvidence, ...reviewerEvidence].slice(0, 20),
           relatedIdeas: [],
         });
@@ -621,12 +653,13 @@ export async function registerIdeaRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get("/api/ideas/:id/comments", async (request, reply) => {
-    if (!await requireActor(app, request, reply)) return;
+    const actor = await requireActor(app, request, reply);
+    if (!actor) return;
     const ideaId = parseId((request.params as { id: string }).id);
     if (!ideaId) return sendError(reply, request, "validation_error", "Invalid idea ID.", 400);
     try {
       const idea = await getIdeaById(ideaId);
-      if (!idea || idea.status === "draft") return sendError(reply, request, "not_found", "Idea not found.", 404);
+      if (!idea || ((actor.role === "employee" || idea.status === "draft") && idea.authorId !== actor.userId)) return sendError(reply, request, "not_found", "Idea not found.", 404);
       return sendEnvelope(reply, request, await listIdeaComments(ideaId, CommentListQuerySchema.parse(queryObject(request))));
     } catch (error) {
       if (error instanceof z.ZodError) return sendValidationError(reply, request);

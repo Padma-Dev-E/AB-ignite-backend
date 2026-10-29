@@ -5,14 +5,14 @@ import { aiPromptSeeds } from "../prompts/seed-data";
 
 test("question prompt maps idea-specific follow-ups to the five required review topics", () => {
   const prompt = aiPromptSeeds.find((item) => item.jobKey === "idea.questions")?.systemPrompt ?? "";
-  assert.match(prompt, /specific idea/i);
-  assert.match(prompt, /exactly five follow-up questions/i);
+  assert.match(prompt, /grounded in its matching answer and the full proposal/i);
+  assert.match(prompt, /concrete detail or omission in the idea/i);
+  assert.match(prompt, /Generate exactly five useful follow-up questions/i);
   assert.match(prompt, /Who benefits/i);
   assert.match(prompt, /What happens today/i);
   assert.match(prompt, /What is needed/i);
   assert.match(prompt, /What could go wrong/i);
   assert.match(prompt, /How is success measured/i);
-  assert.match(prompt, /corresponding answer/i);
 });
 
 test("question schema requires five questions with a required topic label", () => {

@@ -35,9 +35,11 @@ test("new AI validation outputs request a 0–10 score", () => {
   assert.equal(ideaValidateJob.version, "3");
   const evaluationSchema = ideaValidateJob.responseJsonSchema.properties?.evaluation;
   assert.deepEqual(evaluationSchema?.required, ["turnaroundTime", "volume", "savingsRevenue"]);
+  const evenTwoLenses = { turnaroundTime: { score: 2 }, volume: { score: 2 }, savingsRevenue: { score: 2 } };
+  assert.equal(weightedValidationScore(evenTwoLenses), 6.67);
   assert.equal(weightedValidationScore({ turnaroundTime: { score: 2.1 }, volume: { score: 2.1 }, savingsRevenue: { score: 2.1 } }), 7);
   assert.ok(weightedValidationScore({ turnaroundTime: { score: 2.2 }, volume: { score: 2.2 }, savingsRevenue: { score: 2.2 } }) > 7);
   const prompt = aiPromptSeeds.find((item) => item.jobKey === "idea.validate")?.systemPrompt ?? "";
-  assert.match(prompt, /human review threshold/);
-  assert.match(prompt, /needs_human_review as an advisory/i);
+  assert.match(prompt, /A score above 7 may be labelled/);
+  assert.match(prompt, /high\/critical risks or confidence below 0\.5 require `needs_human_review`/i);
 });

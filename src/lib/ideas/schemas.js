@@ -78,6 +78,21 @@ export const IdeaSubmissionDetailsSchema = z.strictObject({
     buildsOnId: z.number().int().positive().optional(),
     differentiation: z.string().trim().max(2_000).optional(),
 });
+export const IdeaDraftProgressSchema = z.strictObject({
+    step: z.number().int().min(1).max(5),
+    raw: z.string().max(2_000),
+    answers: z.record(z.string().trim().min(1).max(500), z.string().max(1_000)).refine((answers) => Object.keys(answers).length <= 8),
+    impact: z.strictObject({ turnaround: z.string().max(32), volume: z.string().max(32), value: z.string().max(32) }),
+    metricExplanations: z.strictObject({ turnaround: z.string().max(1_000), volume: z.string().max(1_000), value: z.string().max(1_000) }),
+    differentiation: z.string().max(2_000),
+    continueWithoutQuestions: z.boolean(),
+    workingCopy: z.strictObject({
+        kind: z.enum(["idea", "problem"]),
+        title: z.string().max(200),
+        summary: z.string().max(2_000),
+        details: z.strictObject({ problem: z.string().max(5_000), solution: z.string().max(5_000), benefits: z.string().max(5_000), risks: z.string().max(5_000) }),
+    }),
+});
 export function calculateIdeaPriority(metrics) {
     const score = Math.round((metrics.turnaround * 0.3 + metrics.volume * 0.3 + metrics.value * 0.4) * 100) / 100;
     const band = score >= 2.5 ? "Priority" : score >= 1.5 ? "Quality" : "Watch";

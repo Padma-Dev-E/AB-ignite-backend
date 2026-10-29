@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { db } from "../../db/connection";
-import { aiRuns, aiPromptCatalog, aiPromptVersions, aiRunEvents, ideaAiResults, ideaEvents, ideaReviews, ideaComments, ideaSupports, ideaSubmissions, ideaSettings, ideaReferenceSequences, notifications, auditEvents, ideaVersions, ideas, users, } from "../../db/schema";
+import { aiRuns, aiPromptCatalog, aiPromptVersions, aiRunEvents, ideaAiResults, ideaEvents, ideaReviews, ideaComments, ideaSupports, ideaSubmissions, ideaDraftProgress, ideaSettings, ideaReferenceSequences, notifications, auditEvents, ideaVersions, ideas, users, } from "../../db/schema";
 import { awardPoints } from "../rewards/service";
 import { appendAuditEvent } from "../audit/service";
 import { defaultPriorityPolicy, resolvePriorityPolicy, scorePriority } from "./priority-policy";
@@ -422,6 +422,37 @@ export async function getIdeaSubmissionDetails(ideaId) {
         return null;
     return { answers: JSON.parse(row.answersJson), metrics: JSON.parse(row.metricsJson), score: row.score, minimumScore: row.minimumScore, validationPassed: row.validationPassed, aiValidationScore: row.aiValidationScore, aiValidationAttempts: row.aiValidationAttempts, submittedWithLowAiScore: row.submittedWithLowAiScore, differentiation: row.differentiation };
 }
+export async function getIdeaDraftProgress(actor, ideaId) {
+    const userId = actorUserId(actor);
+    const [idea] = await db.select({ id: ideas.id }).from(ideas)
+        .where(and(eq(ideas.id, ideaId), eq(ideas.authorId, userId), eq(ideas.status, "draft")))
+        .limit(1).all();
+    if (!idea)
+        return null;
+    const [row] = await db.select().from(ideaDraftProgress).where(eq(ideaDraftProgress.ideaId, ideaId)).limit(1).all();
+    if (!row)
+        return null;
+    try {
+        return JSON.parse(row.progressJson);
+    }
+    catch {
+        return null;
+    }
+}
+export async function saveIdeaDraftProgress(actor, ideaId, progress) {
+    const userId = actorUserId(actor);
+    return db.transaction((tx) => {
+        const [idea] = tx.select({ id: ideas.id }).from(ideas)
+            .where(and(eq(ideas.id, ideaId), eq(ideas.authorId, userId), eq(ideas.status, "draft")))
+            .limit(1).all();
+        if (!idea)
+            return false;
+        tx.insert(ideaDraftProgress).values({ ideaId, progressJson: JSON.stringify(progress), updatedAt: new Date() })
+            .onConflictDoUpdate({ target: ideaDraftProgress.ideaId, set: { progressJson: JSON.stringify(progress), updatedAt: new Date() } })
+            .run();
+        return true;
+    });
+}
 export async function updateReturnedIdea(actor, ideaId, input) {
     const userId = actorUserId(actor);
     return db.transaction((tx) => {
@@ -597,7 +628,8 @@ export async function submitIdea(actor, ideaId, options = {}) {
         if (!submission)
             throw new Error("Five answers and all three impact metrics are required before submission");
         const metrics = JSON.parse(submission.metricsJson);
-        if (submission.submittedAt) {
+        const returnedResubmission = idea.status === "returned";
+        if (submission.submittedAt && !returnedResubmission) {
             const [event] = tx.select({ metadataJson: ideaEvents.metadataJson }).from(ideaEvents)
                 .where(and(eq(ideaEvents.ideaId, ideaId), eq(ideaEvents.eventType, "submitted"))).orderBy(desc(ideaEvents.id)).limit(1).all();
             let breakdown = scorePriority(metrics, defaultPriorityPolicy).breakdown;
@@ -615,6 +647,11 @@ export async function submitIdea(actor, ideaId, options = {}) {
         const priority = scorePriority(metrics, policy);
         const { breakdown } = priority;
         const [latestVersion] = tx.select({ id: ideaVersions.id }).from(ideaVersions).where(eq(ideaVersions.ideaId, ideaId)).orderBy(desc(ideaVersions.version)).limit(1).all();
+        if (returnedResubmission) {
+            const [editedVersionEvent] = tx.select({ id: ideaEvents.id }).from(ideaEvents).where(and(eq(ideaEvents.ideaId, ideaId), eq(ideaEvents.ideaVersionId, latestVersion?.id ?? -1), eq(ideaEvents.eventType, "returned_edited"))).limit(1).all();
+            if (!editedVersionEvent)
+                throw new Error("Edit the returned idea before resubmitting it");
+        }
         const [validationRun] = tx.select().from(aiRuns).where(and(eq(aiRuns.ideaId, ideaId), eq(aiRuns.jobKey, "idea.validate"), eq(aiRuns.ideaVersionId, latestVersion?.id ?? -1))).orderBy(desc(aiRuns.createdAt)).limit(1).all();
         let validationScore = null;
         let validationPassed = false;
@@ -641,7 +678,7 @@ export async function submitIdea(actor, ideaId, options = {}) {
         }
         const submittedWithLowAiScore = !validationPassed && validationScore !== null &&
             validationScore <= IDEA_VALIDATION_PASS_SCORE && options.submitForHumanReview === true && failedValidationResults >= 2;
-        if (!validationPassed && !submittedWithLowAiScore) {
+        if (!returnedResubmission && !validationPassed && !submittedWithLowAiScore) {
             if (validationScore !== null && validationScore <= IDEA_VALIDATION_PASS_SCORE && failedValidationResults >= 2) {
                 throw new Error("This idea scored below the AI validation threshold. Choose submit for human review to continue.");
             }
@@ -666,6 +703,37 @@ export async function submitIdea(actor, ideaId, options = {}) {
             throw new IdeaPriorityMinimumError(priority.score, minimum, priority.band, breakdown);
         if (idea.status !== "draft" && idea.status !== "screening" && idea.status !== "returned")
             throw new Error("Idea cannot be submitted from its current status");
+        if (returnedResubmission) {
+            const now = new Date();
+            const [updated] = tx.update(ideas).set({ status: "screening", priorityScore: priority.score, priorityBand: priority.band, updatedAt: now })
+                .where(and(eq(ideas.id, ideaId), eq(ideas.status, "returned"))).returning().all();
+            if (!updated)
+                throw new Error("Idea status changed before the resubmission could be recorded");
+            tx.update(ideaSubmissions).set({
+                score: priority.score,
+                minimumScore: minimum,
+                validationPassed: false,
+                aiValidationScore: null,
+                submittedWithLowAiScore: false,
+                submittedAt: now,
+                updatedAt: now,
+            }).where(eq(ideaSubmissions.ideaId, ideaId)).run();
+            const resubmissionMetadata = {
+                resubmission: true,
+                score: priority.score,
+                band: priority.band,
+                minimum,
+                breakdown,
+                aiValidationScore: null,
+                aiValidationAttempts: scoredValidationResults,
+                submittedWithLowAiScore: false,
+                validationVersionId: latestVersion?.id ?? null,
+            };
+            tx.insert(ideaEvents).values({ ideaId, ideaVersionId: latestVersion?.id ?? null, actorType: actor.kind, actorId: userId, eventType: "submitted", fromStatus: "returned", toStatus: "screening", metadataJson: JSON.stringify(resubmissionMetadata) }).run();
+            tx.insert(notifications).values({ userId, type: "idea_submitted", title: "Idea resubmitted", body: `${idea.reference} has been sent back for review.`, link: `/ideas/${ideaId}` }).run();
+            tx.insert(auditEvents).values({ actorUserId: userId, action: "ideas.resubmitted", targetType: "idea", targetId: String(ideaId), metadataJson: JSON.stringify(resubmissionMetadata), createdAt: now }).run();
+            return { idea: updated, reference: idea.reference, score: priority.score, minimumScore: minimum, priorityBand: updated.priorityBand, category: updated.category, breakdown, ...resubmissionMetadata, submitted: true };
+        }
         const year = new Date().getUTCFullYear();
         const [{ count: existingReferences }] = tx.select({ count: sql `count(*)` }).from(ideas).where(like(ideas.reference, `ABI-${year}-%`)).all();
         const [sequence] = tx.insert(ideaReferenceSequences).values({ year, lastValue: Number(existingReferences ?? 0) + 1 }).onConflictDoUpdate({

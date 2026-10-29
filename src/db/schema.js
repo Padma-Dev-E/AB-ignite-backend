@@ -125,6 +125,11 @@ export const ideaSubmissions = sqliteTable("idea_submissions", {
     submittedAt: integer({ mode: "timestamp_ms" }),
     ...timestamps,
 });
+export const ideaDraftProgress = sqliteTable("idea_draft_progress", {
+    ideaId: integer().primaryKey().references(() => ideas.id, { onDelete: "cascade" }),
+    progressJson: text().notNull(),
+    updatedAt: integer({ mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+});
 export const ideaSettings = sqliteTable("idea_settings", {
     key: text().primaryKey(),
     value: text().notNull(),
@@ -770,6 +775,7 @@ export const schema = {
     auditEvents,
     ideas,
     ideaSubmissions,
+    ideaDraftProgress,
     ideaSettings,
     ideaReferenceSequences,
     aiPromptCatalog,

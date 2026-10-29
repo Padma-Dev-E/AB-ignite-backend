@@ -8,7 +8,10 @@ test("idea validation prompt calibrates evidence and does not default impact len
   const validation = prompt("idea.validate");
   assert.match(validation, /0 = no credible causal path/);
   assert.match(validation, /2 = a clear, plausible mechanism and named group or recurring process/);
-  assert.match(validation, /Do not default all lenses to 1/);
+  assert.match(validation, /must not cap every relevant lens at 2/);
+  assert.match(validation, /Rate each lens independently from its own evidence/);
+  assert.match(validation, /Equal ratings, including 2\/2\/2, are valid/);
+  assert.match(validation, /metrics.*directional estimates, not verified measurements/i);
   assert.match(validation, /server is authoritative and recomputes/);
   assert.match(validation, /Never use `reject` solely because a score is low/);
 });
